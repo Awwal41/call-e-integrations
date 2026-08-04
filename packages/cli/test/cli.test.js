@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 
 import { POST_AUTH_HELP_MESSAGE, preAuthHelpMessage, runCli } from "../lib/cli.js";
 import { pendingCachePath, tokenCachePath, writePrivateJson } from "../lib/cache.js";
-import { CLI_VERSION } from "../lib/config.js";
+import { CLI_VERSION, resolveRuntimeConfig } from "../lib/config.js";
 
 const defaultIntegrationHeader = `cli/cli/${CLI_VERSION}`;
 
@@ -1875,4 +1875,97 @@ test("telemetry opt-out flags and failures do not affect command output", async 
   });
   assert.equal(result.code, 0);
   assert.equal(JSON.parse(result.stdout).usable, false);
+});
+
+test("resolveRuntimeConfig rejects durations that are not plain numbers", () => {
+  // "30s" and "1m" are how people write durations, and Number() turns both into
+  // NaN. Previously that NaN reached mcp-client's timeout arithmetic, where
+  // Math.max(NaN, 1000) stays NaN and setTimeout substitutes 1ms, so every MCP
+  // call aborted before it left. Fail at the edge instead, with the flag named.
+  for (const bad of ["30s", "1m", "abc", "-5", "0"]) {
+    assert.throws(
+      () => resolveRuntimeConfig({ timeoutSeconds: bad }),
+      /--timeout-seconds expects a positive number of seconds/,
+      `expected "${bad}" to be rejected`,
+    );
+  }
+
+  assert.throws(
+    () => resolveRuntimeConfig({ pollTimeoutSeconds: "5m" }),
+    /--poll-timeout-seconds expects a positive number of seconds/,
+  );
+  assert.throws(
+    () => resolveRuntimeConfig({ minTtlSeconds: "60s" }),
+    /--min-ttl-seconds expects a non-negative number of seconds/,
+  );
+  assert.throws(
+    () => resolveRuntimeConfig({ telemetryTimeoutSeconds: "1.5s" }, {}),
+    /--telemetry-timeout-seconds expects a positive number of seconds/,
+  );
+});
+
+test("resolveRuntimeConfig keeps --min-ttl-seconds 0 working", () => {
+  // Zero disables the minimum remaining-lifetime window, which is a documented
+  // way to use the flag. The duration validator is strictly positive, so sharing
+  // it across every setting would have taken that away.
+  assert.equal(resolveRuntimeConfig({ minTtlSeconds: "0" }).minTtlSeconds, 0);
+  assert.equal(resolveRuntimeConfig({ minTtlSeconds: 0 }).minTtlSeconds, 0);
+
+  // Still not a free pass: a negative minimum is meaningless.
+  assert.throws(
+    () => resolveRuntimeConfig({ minTtlSeconds: "-1" }),
+    /--min-ttl-seconds expects a non-negative number of seconds/,
+  );
+
+  // And zero stays rejected where it would mean "abort immediately".
+  assert.throws(
+    () => resolveRuntimeConfig({ timeoutSeconds: "0" }),
+    /--timeout-seconds expects a positive number of seconds/,
+  );
+});
+
+test("resolveRuntimeConfig rejects timer values Node would collapse to 1ms", () => {
+  // setTimeout stores its delay in a signed 32-bit int. Anything over
+  // 2,147,483,647ms is silently replaced by 1ms, so a very large --timeout-seconds
+  // recreated the same immediate-abort bug the validator was added to stop.
+  const maxSeconds = Math.floor(2_147_483_647 / 1000); // 2147483
+
+  assert.equal(resolveRuntimeConfig({ timeoutSeconds: String(maxSeconds) }).timeoutSeconds, maxSeconds);
+
+  for (const flag of ["timeoutSeconds", "pollTimeoutSeconds"]) {
+    assert.throws(
+      () => resolveRuntimeConfig({ [flag]: String(maxSeconds + 1) }),
+      /expects at most 2147483 seconds/,
+      `expected ${flag} to reject ${maxSeconds + 1}`,
+    );
+  }
+
+  assert.throws(
+    () => resolveRuntimeConfig({ telemetryTimeoutSeconds: String(maxSeconds + 1) }, {}),
+    /expects at most 2147483 seconds/,
+  );
+
+  // --min-ttl-seconds never reaches setTimeout, so it is not bounded by it.
+  assert.equal(
+    resolveRuntimeConfig({ minTtlSeconds: String(maxSeconds + 1) }).minTtlSeconds,
+    maxSeconds + 1,
+  );
+});
+
+test("resolveRuntimeConfig keeps accepting valid values and defaults", () => {
+  const explicit = resolveRuntimeConfig({ timeoutSeconds: "30" });
+  assert.equal(explicit.timeoutSeconds, 30);
+
+  const defaults = resolveRuntimeConfig({}, {});
+  assert.equal(Number.isFinite(defaults.timeoutSeconds), true);
+  assert.equal(Number.isFinite(defaults.pollTimeoutSeconds), true);
+  assert.equal(Number.isFinite(defaults.minTtlSeconds), true);
+  assert.equal(Number.isFinite(defaults.telemetryTimeoutSeconds), true);
+
+  // Falsy values still fall back to the default, as before.
+  assert.equal(resolveRuntimeConfig({ timeoutSeconds: "" }).timeoutSeconds, defaults.timeoutSeconds);
+  assert.equal(
+    resolveRuntimeConfig({ timeoutSeconds: undefined }).timeoutSeconds,
+    defaults.timeoutSeconds,
+  );
 });
