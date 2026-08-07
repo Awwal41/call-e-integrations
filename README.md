@@ -348,27 +348,43 @@ For authentication, webhooks, and the full reference, see the [API docs](https:/
 
 ## Supported Regions and Languages
 
-Use these region codes with the SDK and API.
+Use these country codes with the SDK and API recipient settings.
 
-| Country | Code | Languages |
-| --- | --- | --- |
-| United States | `US` | English |
-| Singapore | `SG` | English |
-| Malaysia | `MY` | English |
-| India | `IN` | English, Hindi |
-| United Arab Emirates | `AE` | English, Arabic |
-| Australia | `AU` | English |
-| Canada | `CA` | English |
-| United Kingdom | `GB` | English |
-| Vietnam | `VN` | Vietnamese |
-| Germany | `DE` | English, German |
-| Japan | `JP` | Japanese |
-| France | `FR` | French |
-| Mexico | `MX` | Spanish |
-| Brazil | `BR` | Portuguese |
-| Indonesia | `ID` | English |
-| Philippines | `PH` | English |
-| Kenya | `KE` | English |
+| Country | Country Code | Calling Code | Languages | Line Region |
+| --- | --- | --- | --- | --- |
+| United States of America | `US` | +1 | English | Local |
+| Singapore | `SG` | +65 | English | Local |
+| Malaysia | `MY` | +60 | English | Local |
+| India | `IN` | +91 | English, Hindi | Local |
+| United Arab Emirates | `AE` | +971 | English, Arabic | Local |
+| Australia | `AU` | +61 | English | Local |
+| Canada | `CA` | +1 | English | International |
+| United Kingdom of Great Britain and Northern Ireland | `GB` | +44 | English | International |
+| Viet Nam | `VN` | +84 | Vietnamese, English | International |
+| Germany | `DE` | +49 | English, German | International |
+| Japan | `JP` | +81 | Japanese, English | International |
+| France | `FR` | +33 | French, English | International |
+| Mexico | `MX` | +52 | Spanish, English | Local |
+| Brazil | `BR` | +55 | Portuguese, English | Local |
+| Indonesia | `ID` | +62 | English | International |
+| Philippines | `PH` | +63 | English | International |
+| Kenya | `KE` | +254 | English | International |
+| Netherlands | `NL` | +31 | English | International |
+| Poland | `PL` | +48 | Polish, English | International |
+| Bangladesh | `BD` | +880 | Bengali, English | International |
+| Nigeria | `NG` | +234 | English | International |
+| Oman | `OM` | +968 | English, Arabic | International |
+| Thailand | `TH` | +66 | English, Thai | International |
+| Namibia | `NA` | +264 | English | International |
+| Cameroon | `CM` | +237 | English, French | International |
+| Mozambique | `MZ` | +258 | English, Portuguese | International |
+| Saudi Arabia | `SA` | +966 | English, Arabic | International |
+| Finland | `FI` | +358 | English | International |
+
+**Notes**
+
+- **Local** means calls are placed using a local phone line for the destination country or region.
+- **International** means calls are currently placed using CALL-E's international phone numbers and are primarily intended for testing. For production use with a local phone number, contact the CALL-E team to enable a local line for the destination country.
 
 ---
 
