@@ -42,6 +42,28 @@ calle auth status
 calle mcp tools
 ```
 
+## Plan A Call
+
+Use command-specific help to see the parameters accepted by the installed CLI
+version, then create a plan:
+
+```bash
+calle call plan --help
+calle call plan --to-phone +15551234567 --goal "Confirm the appointment"
+```
+
+Help follows the command hierarchy, so you can discover a group before choosing
+a subcommand:
+
+```bash
+calle --help
+calle call --help
+calle call plan --help
+```
+
+When an argument is missing, unknown, or belongs to another subcommand, the
+error output includes the corresponding `help_command` to run.
+
 ## More
 
 See [packages/cli/README.md](../../packages/cli/README.md) for package usage

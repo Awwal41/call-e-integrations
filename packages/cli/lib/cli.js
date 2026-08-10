@@ -26,6 +26,13 @@ class InvalidArgumentsError extends Error {
   }
 }
 
+function resolveCliRuntimeConfig(options, env) {
+  try {
+    return resolveRuntimeConfig(options, env);
+  } catch (error) {
+    throw new InvalidArgumentsError(error?.message || String(error));
+  }
+}
 export function preAuthHelpMessage(loginUrl) {
   return `Hi, I'm CALL-E 👋
 
@@ -50,22 +57,154 @@ I'll keep you updated on the phone status, call content, and summary.`;
 const POST_AUTH_HELP_HINT_TYPE = "post_auth_help";
 const PRE_AUTH_HELP_HINT_TYPE = "pre_auth_help";
 
-function printHelp(stdout) {
-  stdout(`Usage: calle <command> [options]
+const COMMAND_GROUPS = {
+  auth: {
+    summary: "Manage brokered login and the local token cache",
+    commands: {
+      login: {
+        summary: "Start brokered login and cache the token locally",
+        usage: "calle auth login [options]",
+        options: [
+          "  --force-login                 Start a new login even when cached state exists",
+          "  --start-only                  Return the login URL without polling",
+          "  --no-browser-open             Do not open the login URL in a browser",
+        ],
+        examples: ["calle auth login", "calle auth login --start-only --no-browser-open"],
+      },
+      status: {
+        summary: "Show local token cache status",
+        usage: "calle auth status [options]",
+        examples: ["calle auth status"],
+      },
+      logout: {
+        summary: "Remove local token and pending login cache",
+        usage: "calle auth logout [options]",
+        examples: ["calle auth logout"],
+      },
+    },
+  },
+  mcp: {
+    summary: "Configure and call the CALL-E MCP server",
+    commands: {
+      config: {
+        summary: "Print MCP client configuration JSON",
+        usage: "calle mcp config [options]",
+        examples: ["calle mcp config"],
+      },
+      tools: {
+        summary: "List tools from the configured MCP server",
+        usage: "calle mcp tools [options]",
+        examples: ["calle mcp tools"],
+      },
+      call: {
+        summary: "Call an arbitrary MCP tool",
+        usage: "calle mcp call <tool-name> [options]",
+        options: [
+          "  --args-json <json>            JSON object passed as tool arguments",
+          "  --timezone <iana>             Planning timezone metadata for plan_call",
+        ],
+        examples: [
+          `calle mcp call plan_call --args-json '{"user_input":"Call Alex"}'`,
+        ],
+      },
+    },
+  },
+  call: {
+    summary: "Plan, start, run, and inspect phone calls",
+    commands: {
+      plan: {
+        summary: "Plan a phone call via plan_call",
+        usage: "calle call plan --to-phone <phone> --goal <text> [options]",
+        options: [
+          "  --to-phone <phone>            Required; repeat once per destination phone number",
+          "  --goal <text>                 Required; call goal or instruction",
+          "  --language <language>         Optional language hint",
+          "  --region <region>             Optional region hint",
+          "  --timezone <iana>             Optional planning timezone metadata",
+        ],
+        examples: [
+          `calle call plan --to-phone +15551234567 --goal "Confirm the appointment"`,
+        ],
+      },
+      start: {
+        summary: "Plan and run a phone call without printing confirmation data",
+        usage: "calle call start --to-phone <phone> --goal <text> [options]",
+        options: [
+          "  --to-phone <phone>            Required; repeat once per destination phone number",
+          "  --goal <text>                 Required; call goal or instruction",
+          "  --language <language>         Optional language hint",
+          "  --region <region>             Optional region hint",
+          "  --timezone <iana>             Optional planning timezone metadata",
+        ],
+        examples: [
+          `calle call start --to-phone +15551234567 --goal "Confirm the appointment"`,
+        ],
+      },
+      run: {
+        summary: "Run a planned phone call, then fetch status once",
+        usage: "calle call run --plan-id <id> --confirm-token <token> [options]",
+        options: [
+          "  --plan-id <id>                Required; plan ID returned by plan_call",
+          "  --confirm-token <token>       Required; confirmation token returned by plan_call",
+          "  --timezone <iana>             Local timezone for returned call timestamps",
+        ],
+        examples: ["calle call run --plan-id plan_123 --confirm-token token_123"],
+      },
+      status: {
+        summary: "Query a call run via get_call_run",
+        usage: "calle call status --run-id <id> [options]",
+        options: [
+          "  --run-id <id>                 Required; call run ID",
+          "  --cursor <cursor>             Optional activity pagination cursor",
+          "  --limit <number>              Optional positive activity page size",
+          "  --timezone <iana>             Local timezone for returned call timestamps",
+        ],
+        examples: ["calle call status --run-id run_123"],
+      },
+    },
+  },
+};
 
-Commands:
-  auth login     Start brokered login and cache the token locally
-  auth status    Show local token cache status
-  auth logout    Remove local token and pending login cache
-  mcp config     Print MCP client configuration JSON
-  mcp tools      List tools from the configured MCP server
-  mcp call       Call an arbitrary MCP tool with --args-json
-  call plan      Plan a phone call via plan_call
-  call start     Plan and run a phone call without printing confirmation data
-  call run       Run a planned phone call, then fetch status once
-  call status    Query a call run via get_call_run
+const COMMON_OPTION_NAMES = new Set([
+  "base-url",
+  "broker-base-url",
+  "server-url",
+  "auth-base-url",
+  "channel",
+  "client-name",
+  "scope",
+  "cache-root",
+  "min-ttl-seconds",
+  "timeout-seconds",
+  "poll-timeout-seconds",
+  "server-name",
+  "json",
+  "no-telemetry",
+  "telemetry",
+  "telemetry-url",
+  "telemetry-timeout-seconds",
+]);
 
-Common options:
+const COMMAND_OPTION_NAMES = {
+  "auth login": new Set(["force-login", "start-only", "no-browser-open"]),
+  "auth status": new Set(),
+  "auth logout": new Set(),
+  "mcp config": new Set(),
+  "mcp tools": new Set(),
+  "mcp call": new Set(["args-json", "timezone"]),
+  "call plan": new Set(["to-phone", "goal", "language", "region", "timezone"]),
+  "call start": new Set(["to-phone", "goal", "language", "region", "timezone"]),
+  "call run": new Set(["plan-id", "confirm-token", "timezone"]),
+  "call status": new Set(["run-id", "cursor", "limit", "timezone"]),
+};
+
+const KNOWN_OPTION_NAMES = new Set([
+  ...COMMON_OPTION_NAMES,
+  ...Object.values(COMMAND_OPTION_NAMES).flatMap((names) => [...names]),
+  "help",
+]);
+
+const COMMON_HELP = `Global options (accepted by every command):
   --base-url <url>             Default: ${DEFAULT_BASE_URL}
   --broker-base-url <url>      Default: --base-url
   --server-url <url>           Default: <base-url>/mcp/<channel>
@@ -74,28 +213,93 @@ Common options:
   --client-name <name>         Default: ${DEFAULT_CLIENT_NAME}
   --scope <scope>              Default: ${DEFAULT_SCOPE}
   --cache-root <path>
+  --min-ttl-seconds <seconds>
   --timeout-seconds <seconds>
   --poll-timeout-seconds <seconds>
-  --server-name <name>          Default: calle
-  --force-login
-  --start-only
-  --no-browser-open
-  --no-telemetry
+  --server-name <name>         Default: calle
   --json
+  --no-telemetry
+  --telemetry[=true|false]
+  --telemetry-url <url>
+  --telemetry-timeout-seconds <seconds>
+  --help, -h                   Show help for the current command`;
 
-MCP/call options:
-  --args-json <json>           Arguments for calle mcp call
-  --to-phone <phone>           Repeatable for calle call plan
-  --goal <text>
-  --language <language>
-  --region <region>
-  --timezone <iana>            Timezone for call planning and local call timestamp display
-  --plan-id <id>
-  --confirm-token <token>
-  --run-id <id>
-  --cursor <cursor>
-  --limit <number>
+function helpCommandFor(group, command) {
+  if (COMMAND_GROUPS[group]?.commands?.[command]) {
+    return `calle ${group} ${command} --help`;
+  }
+  if (COMMAND_GROUPS[group]) {
+    return `calle ${group} --help`;
+  }
+  return "calle --help";
+}
+
+function printRootHelp(stdout) {
+  const commands = Object.entries(COMMAND_GROUPS)
+    .flatMap(([group, details]) => Object.entries(details.commands)
+      .map(([command, commandDetails]) => [
+        `${group} ${command}`,
+        commandDetails.summary,
+      ]))
+    .map(([name, summary]) => `  ${name.padEnd(13)} ${summary}`)
+    .join("\n");
+  stdout(`Usage: calle <command> [options]
+
+Commands:
+${commands}
+
+Run 'calle <command> --help' to list a group's subcommands.
+Run 'calle <command> <subcommand> --help' to view all supported parameters.
+Example: calle call plan --help
+
+${COMMON_HELP}
 `);
+}
+
+function printGroupHelp(stdout, group) {
+  const details = COMMAND_GROUPS[group];
+  const commands = Object.entries(details.commands)
+    .map(([name, command]) => `  ${name.padEnd(8)} ${command.summary}`)
+    .join("\n");
+  stdout(`Usage: calle ${group} <command> [options]
+
+${details.summary}.
+
+Commands:
+${commands}
+
+Run 'calle ${group} <command> --help' to view all supported parameters.
+`);
+}
+
+function printCommandHelp(stdout, group, command) {
+  const details = COMMAND_GROUPS[group].commands[command];
+  const commandOptions = details.options?.length
+    ? `\nCommand options:\n${details.options.join("\n")}\n`
+    : "";
+  const examples = details.examples.map((example) => `  ${example}`).join("\n");
+  stdout(`Usage: ${details.usage}
+
+${details.summary}.
+${commandOptions}
+${COMMON_HELP}
+
+Examples:
+${examples}
+`);
+}
+
+function printHelp(stdout, argv = []) {
+  const [group, command] = argv;
+  if (COMMAND_GROUPS[group]?.commands?.[command]) {
+    printCommandHelp(stdout, group, command);
+    return;
+  }
+  if (COMMAND_GROUPS[group]) {
+    printGroupHelp(stdout, group);
+    return;
+  }
+  printRootHelp(stdout);
 }
 
 function toCamelCase(optionName) {
@@ -105,6 +309,7 @@ function toCamelCase(optionName) {
 function parseOptions(argv) {
   const options = {};
   const positional = [];
+  const optionNames = [];
   const booleanOptions = new Set([
     "force-login",
     "start-only",
@@ -124,6 +329,10 @@ function parseOptions(argv) {
     const withoutPrefix = arg.slice(2);
     const eqIndex = withoutPrefix.indexOf("=");
     const optionName = eqIndex >= 0 ? withoutPrefix.slice(0, eqIndex) : withoutPrefix;
+    if (!KNOWN_OPTION_NAMES.has(optionName)) {
+      throw new InvalidArgumentsError(`Unknown option: --${optionName}`);
+    }
+    optionNames.push(optionName);
     const key = toCamelCase(optionName);
     const setOption = (value) => {
       if (options[key] === undefined) {
@@ -144,11 +353,11 @@ function parseOptions(argv) {
     }
     index += 1;
     if (index >= argv.length) {
-      throw new Error(`Missing value for --${optionName}`);
+      throw new InvalidArgumentsError(`Missing value for --${optionName}`);
     }
     setOption(argv[index]);
   }
-  return { options, positional };
+  return { options, positional, optionNames };
 }
 
 function firstOptionValue(value) {
@@ -364,6 +573,21 @@ function assertNoUnexpectedPositional(positional) {
   }
 }
 
+function assertSupportedOptions(group, command, optionNames) {
+  const commandOptions = COMMAND_OPTION_NAMES[commandName(group, command)];
+  if (!commandOptions) {
+    return;
+  }
+  const unsupported = optionNames.find(
+    (optionName) => !COMMON_OPTION_NAMES.has(optionName) && !commandOptions.has(optionName),
+  );
+  if (unsupported) {
+    throw new InvalidArgumentsError(
+      `Option --${unsupported} is not supported by calle ${group} ${command}`,
+    );
+  }
+}
+
 function postAuthAssistantHint(status) {
   if (status !== "logged_in" && status !== "cached") {
     return null;
@@ -523,7 +747,7 @@ async function verifyCachedTokenWithMcp({ config, fetchImpl }) {
   await listMcpTools({ config, fetchImpl });
 }
 
-function errorPayload(error, config) {
+function errorPayload(error, config, helpCommand = null) {
   if (error instanceof InvalidArgumentsError) {
     return {
       exitCode: 2,
@@ -534,6 +758,7 @@ function errorPayload(error, config) {
           code: "invalid_arguments",
           message: error.message,
         },
+        ...(helpCommand ? { help_command: helpCommand } : {}),
       },
     };
   }
@@ -573,10 +798,13 @@ function errorPayload(error, config) {
   };
 }
 
-function writeCommandError(stdout, stderr, error, config) {
-  const formatted = errorPayload(error, config);
+function writeCommandError(stdout, stderr, error, config, helpCommand = null) {
+  const formatted = errorPayload(error, config, helpCommand);
   writeJson(stdout, formatted.body);
-  stderr(formatted.body.error.message);
+  stderr([
+    formatted.body.error.message,
+    ...(formatted.body.help_command ? [`Run '${formatted.body.help_command}' for usage.`] : []),
+  ].join("\n"));
   return formatted.exitCode;
 }
 
@@ -803,7 +1031,7 @@ async function handleMcpCommand({ command, positional, options, config, deps, st
         await captureTelemetry("cli_local_error", errorTelemetryProperties(error));
       }
     }
-    return writeCommandError(stdout, stderr, error, config);
+    return writeCommandError(stdout, stderr, error, config, helpCommandFor("mcp", command));
   }
 }
 
@@ -910,7 +1138,7 @@ async function handleCallCommand({ command, positional, options, config, deps, s
         await captureTelemetry("cli_local_error", errorTelemetryProperties(error));
       }
     }
-    return writeCommandError(stdout, stderr, error, config);
+    return writeCommandError(stdout, stderr, error, config, helpCommandFor("call", command));
   }
 }
 
@@ -938,7 +1166,7 @@ export function browserOpenCommand(url, platform = process.platform, env = proce
   return [rundll32, ["url.dll,FileProtocolHandler", url]];
 }
 
-export async function runCli(argv, deps = {}) {
+async function runCliCommand(argv, deps = {}) {
   const stdout = deps.stdout || ((text) => process.stdout.write(text));
   const stderr = deps.stderr || ((text) => process.stderr.write(`${text}\n`));
   const openBrowser = deps.openBrowser || (async (url) => {
@@ -953,14 +1181,15 @@ export async function runCli(argv, deps = {}) {
   });
 
   if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
-    printHelp(stdout);
+    printHelp(stdout, argv);
     return 0;
   }
 
   const [group, command, ...rest] = argv;
-  const { options, positional } = parseOptions(rest);
+  const { options, positional, optionNames } = parseOptions(rest);
+  assertSupportedOptions(group, command, optionNames);
 
-  const config = resolveRuntimeConfig(options, deps.env || process.env);
+  const config = resolveCliRuntimeConfig(options, deps.env || process.env);
   const captureTelemetry = createCommandTelemetry({ config, group, command, deps });
   if (prePlanInvokedCommand(group, command)) {
     await captureTelemetry("cli_invoked");
@@ -1083,7 +1312,29 @@ export async function runCli(argv, deps = {}) {
     return handleCallCommand({ command, positional, options, config, deps, stdout, stderr, captureTelemetry });
   }
 
-  throw new Error(`Unknown command: ${[group, command].filter(Boolean).join(" ")}`);
+  throw new InvalidArgumentsError(`Unknown command: ${[group, command].filter(Boolean).join(" ")}`);
+}
+
+export async function runCli(argv, deps = {}) {
+  try {
+    return await runCliCommand(argv, deps);
+  } catch (error) {
+    if (!(error instanceof InvalidArgumentsError)) {
+      throw error;
+    }
+
+    const stdout = deps.stdout || ((text) => process.stdout.write(text));
+    const stderr = deps.stderr || ((text) => process.stderr.write(`${text}\n`));
+    const [group, command, ...rest] = argv;
+    let config = null;
+    try {
+      const { options } = parseOptions(rest);
+      config = resolveRuntimeConfig(options, deps.env || process.env);
+    } catch {
+      // Invalid option syntax may prevent runtime configuration from being resolved.
+    }
+    return writeCommandError(stdout, stderr, error, config, helpCommandFor(group, command));
+  }
 }
 
 export async function main(argv = process.argv.slice(2), deps = {}) {

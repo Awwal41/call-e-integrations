@@ -90,6 +90,86 @@ async function run(argv, deps = {}) {
   return { code, stdout, stderr };
 }
 
+test("prints group and command-specific help without contacting the server", async () => {
+  const groupResult = await run(["call", "--help"]);
+  const commandResult = await run(["call", "plan", "--help"]);
+
+  assert.equal(groupResult.code, 0);
+  assert.match(groupResult.stdout, /Usage: calle call <command>/);
+  assert.match(groupResult.stdout, /calle call <command> --help/);
+  assert.equal(groupResult.stderr, "");
+
+  assert.equal(commandResult.code, 0);
+  assert.match(commandResult.stdout, /Usage: calle call plan --to-phone <phone> --goal <text>/);
+  assert.match(commandResult.stdout, /--to-phone <phone>\s+Required/);
+  assert.match(commandResult.stdout, /--goal <text>\s+Required/);
+  assert.match(commandResult.stdout, /Examples:/);
+  assert.equal(commandResult.stderr, "");
+});
+
+test("prints command-specific help for every supported subcommand", async () => {
+  const commands = [
+    ["auth", "login"],
+    ["auth", "status"],
+    ["auth", "logout"],
+    ["mcp", "config"],
+    ["mcp", "tools"],
+    ["mcp", "call"],
+    ["call", "plan"],
+    ["call", "start"],
+    ["call", "run"],
+    ["call", "status"],
+  ];
+
+  for (const command of commands) {
+    const result = await run([...command, "--help"]);
+
+    assert.equal(result.code, 0, command.join(" "));
+    assert.match(result.stdout, new RegExp(`Usage: calle ${command.join(" ")}`));
+    assert.equal(result.stderr, "");
+  }
+});
+
+test("call plan argument errors recommend its command-specific help", async () => {
+  const result = await run(["call", "plan", "--to", "+15551234567", "--goal", "Confirm"]);
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(result.code, 2);
+  assert.equal(payload.error.code, "invalid_arguments");
+  assert.equal(payload.error.message, "Unknown option: --to");
+  assert.equal(payload.help_command, "calle call plan --help");
+  assert.match(result.stderr, /Run 'calle call plan --help' for usage\./);
+});
+
+test("call plan option value errors recommend its command-specific help", async () => {
+  const result = await run([
+    "call",
+    "plan",
+    "--to-phone",
+    "+15551234567",
+    "--goal",
+    "Confirm",
+    "--timeout-seconds",
+    "nope",
+  ]);
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(result.code, 2);
+  assert.equal(payload.error.code, "invalid_arguments");
+  assert.match(payload.error.message, /--timeout-seconds expects a positive number of seconds/);
+  assert.equal(payload.help_command, "calle call plan --help");
+  assert.match(result.stderr, /Run 'calle call plan --help' for usage\./);
+});
+
+test("rejects options that belong to another call subcommand", async () => {
+  const result = await run(["call", "plan", "--run-id", "run_123"]);
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(result.code, 2);
+  assert.match(payload.error.message, /--run-id is not supported by calle call plan/);
+  assert.equal(payload.help_command, "calle call plan --help");
+});
+
 test("auth login defaults broker payload to openagent_oauth and hides token from stdout", async () => {
   const cacheRoot = makeTempRoot("calle-cli-login");
   const serverUrl = "https://mcp.example/mcp/openagent_oauth";

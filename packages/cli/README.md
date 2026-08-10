@@ -10,6 +10,27 @@ shortcuts for terminal-based agents.
 For install and authentication steps, see
 [docs/install/cli.md](../../docs/install/cli.md).
 
+## Quick Start
+
+<!-- sync-with: docs/install/cli.md#plan-a-call -->
+
+Authenticate, inspect the exact parameters for the command you want to use,
+then plan the call:
+
+```bash
+calle auth login
+calle call plan --help
+calle call plan --to-phone +15551234567 --goal "Confirm the appointment"
+```
+
+Help is available at every command level:
+
+```bash
+calle --help
+calle call --help
+calle call plan --help
+```
+
 ## Commands
 
 <!-- sync-with: docs/cli-reference.md#commands -->
@@ -22,6 +43,7 @@ calle auth logout
 calle mcp config
 calle mcp tools
 calle mcp call plan_call --args-json '{"to_phones":["+15551234567"],"goal":"Confirm the appointment"}'
+calle call plan --help
 calle call plan --to-phone +15551234567 --goal "Confirm the appointment"
 calle call start --to-phone +15551234567 --goal "Confirm the appointment"
 calle call run --plan-id <plan_id> --confirm-token <confirm_token>

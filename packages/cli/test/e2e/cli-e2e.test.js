@@ -293,6 +293,16 @@ test("prints help from the real CLI entrypoint", async () => {
   assert.match(result.stdout, /call/);
 });
 
+test("prints command-specific help from the real CLI entrypoint", async () => {
+  const result = await runCalle(["call", "plan", "--help"]);
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Usage: calle call plan --to-phone <phone> --goal <text>/);
+  assert.match(result.stdout, /--language <language>/);
+  assert.match(result.stdout, /--region <region>/);
+  assert.equal(result.stderr, "");
+});
+
 test("prints MCP config without contacting the server", async (t) => {
   const fake = await startFakeServer();
   t.after(() => fake.close());
@@ -726,4 +736,27 @@ test("returns structured invalid_arguments errors", async (t) => {
   assert.equal(payload.ok, false);
   assert.equal(payload.error.code, "invalid_arguments");
   assert.match(payload.error.message, /--goal/);
+  assert.equal(payload.help_command, "calle call plan --help");
+  assert.match(result.stderr, /Run 'calle call plan --help' for usage\./);
+});
+
+test("returns command help for invalid option values", async () => {
+  const result = await runCalle([
+    "call",
+    "plan",
+    "--to-phone",
+    "+15551234567",
+    "--goal",
+    "Confirm",
+    "--timeout-seconds",
+    "nope",
+    "--no-telemetry",
+  ]);
+  const payload = parseJson(result.stdout);
+
+  assert.equal(result.code, 2);
+  assert.equal(payload.error.code, "invalid_arguments");
+  assert.match(payload.error.message, /--timeout-seconds expects a positive number of seconds/);
+  assert.equal(payload.help_command, "calle call plan --help");
+  assert.match(result.stderr, /Run 'calle call plan --help' for usage\./);
 });

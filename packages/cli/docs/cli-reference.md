@@ -4,10 +4,26 @@ This is the canonical reference for `calle` commands, options, defaults, and
 parameter examples. When changing CLI commands or options, update this document
 and any synchronized command guidance in the same change.
 
-## Commands
-
 Successful command stdout is JSON except `--help` and `-h`. Some
 top-level or local failures may print plain stderr.
+
+## Finding Command Help
+
+Help is available at the root, command-group, and subcommand levels:
+
+```bash
+calle --help
+calle call --help
+calle call plan --help
+```
+
+Use the most specific form to see that subcommand's usage, required arguments,
+supported options, global options, and examples. Argument errors return
+`error.code: "invalid_arguments"` and a directly runnable `help_command`, such
+as `calle call plan --help`. Unknown options and options belonging to another
+subcommand are rejected instead of being silently ignored.
+
+## Commands
 
 | Command | Purpose | Required arguments |
 | --- | --- | --- |
@@ -34,7 +50,7 @@ their network requests or output.
 
 | Option | Value | Default | Applies to | Required | Repeatable | Purpose | Example |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `--help`, `-h` | Boolean | `false` | Top-level CLI | No | No | Print help text and exit. | `calle --help` |
+| `--help`, `-h` | Boolean | `false` | Every command level | No | No | Print help for the current root, group, or subcommand and exit. | `calle call plan --help` |
 | `--base-url` | URL | `https://seleven-mcp-sg.airudder.com` | All commands | No | No | Base CALL-E service URL used to derive broker, auth, MCP, and telemetry URLs unless those are set separately. | `calle mcp tools --base-url https://example.test` |
 | `--broker-base-url` | URL | `--base-url` | Auth commands | No | No | Broker API base URL for browser login sessions. | `calle auth login --broker-base-url https://example.test` |
 | `--server-url` | URL | `<base-url>/mcp/<channel>` | MCP and call commands, auth cache identity | No | No | Remote MCP server URL and token cache identity. | `calle mcp tools --server-url https://example.test/mcp/openagent_oauth` |

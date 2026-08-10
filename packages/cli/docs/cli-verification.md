@@ -34,13 +34,16 @@ These commands do not require a live OAuth login:
 
 ```bash
 node packages/cli/bin/calle.js --help
+node packages/cli/bin/calle.js call --help
+node packages/cli/bin/calle.js call plan --help
 node packages/cli/bin/calle.js mcp config --base-url https://seleven-mcp-sg.airudder.com
 node packages/cli/bin/calle.js auth status --base-url https://seleven-mcp-sg.airudder.com
 ```
 
 Expected results:
 
-- `--help` lists `auth`, `mcp`, and `call` commands.
+- Root help lists `auth`, `mcp`, and `call` commands; group help lists call
+  subcommands; `call plan --help` lists its required and optional parameters.
 - `mcp config` prints JSON with `url` ending in `/mcp/openagent_oauth`.
 - `auth status` prints JSON and does not print an access token.
 

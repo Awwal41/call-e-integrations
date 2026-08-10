@@ -133,6 +133,17 @@ calle auth status
 calle mcp tools
 ```
 
+<!-- sync-with: cli.md#plan-a-call -->
+
+Discover nested commands and inspect their exact parameters with hierarchical
+help:
+
+```bash
+calle --help
+calle call --help
+calle call plan --help
+```
+
 One-off usage without a global install:
 
 ```bash
