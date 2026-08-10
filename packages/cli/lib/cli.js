@@ -8,7 +8,14 @@ import {
   tokenCachePath,
   tokenIsUsable,
 } from "./cache.js";
-import { DEFAULT_BASE_URL, DEFAULT_CHANNEL, DEFAULT_CLIENT_NAME, DEFAULT_SCOPE, resolveRuntimeConfig } from "./config.js";
+import {
+  DEFAULT_BASE_URL,
+  DEFAULT_CHANNEL,
+  DEFAULT_CLIENT_NAME,
+  DEFAULT_PLAN_CALL_TIMEOUT_SECONDS,
+  DEFAULT_SCOPE,
+  resolveRuntimeConfig,
+} from "./config.js";
 import { ensurePendingLogin, loginWithBroker } from "./broker-client.js";
 import {
   AuthRequiredError,
@@ -214,7 +221,7 @@ const COMMON_HELP = `Global options (accepted by every command):
   --scope <scope>              Default: ${DEFAULT_SCOPE}
   --cache-root <path>
   --min-ttl-seconds <seconds>
-  --timeout-seconds <seconds>
+  --timeout-seconds <seconds>  Default: 15; plan_call: 150
   --poll-timeout-seconds <seconds>
   --server-name <name>         Default: calle
   --json
@@ -967,6 +974,13 @@ function extractRunId(result) {
   return match?.[1] ?? null;
 }
 
+function mcpToolTimeoutSeconds({ config, options, toolName }) {
+  if (toolName === "plan_call" && options.timeoutSeconds === undefined) {
+    return DEFAULT_PLAN_CALL_TIMEOUT_SECONDS;
+  }
+  return config.timeoutSeconds;
+}
+
 async function runPlannedCallAndFetchStatus({ config, deps, planId, confirmToken }) {
   const runResult = await callMcpTool({
     config,
@@ -1011,6 +1025,7 @@ async function handleMcpCommand({ command, positional, options, config, deps, st
         toolName,
         toolArguments,
         requestMeta: toolName === "plan_call" ? buildPlanRequestMeta(options, deps.env || process.env) : null,
+        timeoutSeconds: mcpToolTimeoutSeconds({ config, options, toolName }),
         fetchImpl: deps.fetchImpl || globalThis.fetch,
       });
       writeJson(stdout, mcpSuccessPayload({ config, toolName, result }));
@@ -1046,6 +1061,7 @@ async function handleCallCommand({ command, positional, options, config, deps, s
         toolName,
         toolArguments: buildPlanArguments(options),
         requestMeta: buildPlanRequestMeta(options, deps.env || process.env),
+        timeoutSeconds: mcpToolTimeoutSeconds({ config, options, toolName }),
         fetchImpl: deps.fetchImpl || globalThis.fetch,
       });
       writeJson(stdout, mcpSuccessPayload({ config, toolName, result }));
@@ -1059,6 +1075,7 @@ async function handleCallCommand({ command, positional, options, config, deps, s
         toolName: "plan_call",
         toolArguments: buildPlanArguments(options),
         requestMeta: buildPlanRequestMeta(options, deps.env || process.env),
+        timeoutSeconds: mcpToolTimeoutSeconds({ config, options, toolName: "plan_call" }),
         fetchImpl: deps.fetchImpl || globalThis.fetch,
       });
       const structuredPlan = structuredPayload(planResult);

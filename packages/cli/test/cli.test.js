@@ -103,6 +103,7 @@ test("prints group and command-specific help without contacting the server", asy
   assert.match(commandResult.stdout, /Usage: calle call plan --to-phone <phone> --goal <text>/);
   assert.match(commandResult.stdout, /--to-phone <phone>\s+Required/);
   assert.match(commandResult.stdout, /--goal <text>\s+Required/);
+  assert.match(commandResult.stdout, /--timeout-seconds <seconds>\s+Default: 15; plan_call: 150/);
   assert.match(commandResult.stdout, /Examples:/);
   assert.equal(commandResult.stderr, "");
 });
@@ -985,6 +986,93 @@ test("mcp call forwards plan_call arguments and request meta", async () => {
   assert.equal(calls[0]._meta["openai/organization"], undefined);
   assert.equal(payload.ok, true);
   assert.equal(payload.tool_name, "plan_call");
+});
+
+test("mcp call gives plan_call an extended default timeout and honors an explicit override", async () => {
+  const cacheRoot = makeTempRoot("calle-cli-mcp-plan-timeout");
+  const serverUrl = "https://mcp.example/mcp/openagent_oauth";
+  writeToken(cacheRoot, serverUrl, "call-token");
+  const requestTimeouts = [];
+  let scheduledTimeoutMs = null;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    scheduledTimeoutMs = Number(delay);
+    return originalSetTimeout(callback, delay, ...args);
+  };
+
+  const fetchImpl = async (_url, init) => {
+    const payload = JSON.parse(init.body);
+    requestTimeouts.push({ method: payload.method, timeoutMs: scheduledTimeoutMs });
+    if (payload.method === "initialize") {
+      return jsonRpcResponse({ jsonrpc: "2.0", id: payload.id, result: {} });
+    }
+    if (payload.method === "notifications/initialized") {
+      return jsonRpcResponse({});
+    }
+    if (payload.method === "tools/call") {
+      return jsonRpcResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: { structuredContent: { plan_id: "plan-1" } },
+      });
+    }
+    throw new Error(`unexpected method: ${payload.method}`);
+  };
+
+  let defaultResult;
+  let explicitResult;
+  let defaultRequestTimeouts;
+  let explicitRequestTimeouts;
+  try {
+    defaultResult = await run(
+      [
+        "mcp",
+        "call",
+        "plan_call",
+        "--args-json",
+        '{"to_phones":["+15551234567"],"goal":"Confirm appointment"}',
+        "--base-url",
+        "https://mcp.example",
+        "--cache-root",
+        cacheRoot,
+      ],
+      { fetchImpl },
+    );
+    defaultRequestTimeouts = [...requestTimeouts];
+    requestTimeouts.length = 0;
+    explicitResult = await run(
+      [
+        "mcp",
+        "call",
+        "plan_call",
+        "--args-json",
+        '{"to_phones":["+15551234567"],"goal":"Confirm appointment"}',
+        "--timeout-seconds",
+        "30",
+        "--base-url",
+        "https://mcp.example",
+        "--cache-root",
+        cacheRoot,
+      ],
+      { fetchImpl },
+    );
+    explicitRequestTimeouts = [...requestTimeouts];
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+
+  assert.equal(defaultResult.code, 0);
+  assert.deepEqual(defaultRequestTimeouts, [
+    { method: "initialize", timeoutMs: 15_000 },
+    { method: "notifications/initialized", timeoutMs: 15_000 },
+    { method: "tools/call", timeoutMs: 150_000 },
+  ]);
+  assert.equal(explicitResult.code, 0);
+  assert.deepEqual(explicitRequestTimeouts, [
+    { method: "initialize", timeoutMs: 30_000 },
+    { method: "notifications/initialized", timeoutMs: 30_000 },
+    { method: "tools/call", timeoutMs: 30_000 },
+  ]);
 });
 
 test("mcp call leaves non-plan tools without request meta or timestamp localization", async () => {

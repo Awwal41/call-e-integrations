@@ -199,6 +199,7 @@ export async function callMcpTool({
   toolName,
   toolArguments = {},
   requestMeta = null,
+  timeoutSeconds = null,
   fetchImpl = globalThis.fetch,
 } = {}) {
   const { rpcHeaders, timeoutMs } = await openMcpSession({ config, fetchImpl });
@@ -210,6 +211,9 @@ export async function callMcpTool({
   if (normalizedRequestMeta) {
     toolCallParams._meta = normalizedRequestMeta;
   }
+  const toolCallTimeoutMs = timeoutSeconds === null
+    ? timeoutMs
+    : Math.max(Math.ceil(Number(timeoutSeconds) * 1000), 1000);
   const response = await requestJsonRpc(fetchImpl, config.serverUrl, {
     headers: rpcHeaders,
     payload: buildJsonRpcPayload({
@@ -217,7 +221,7 @@ export async function callMcpTool({
       method: "tools/call",
       params: toolCallParams,
     }),
-    timeoutMs,
+    timeoutMs: toolCallTimeoutMs,
   });
   return response.body?.result ?? {};
 }

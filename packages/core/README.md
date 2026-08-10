@@ -42,6 +42,24 @@ if (!currentTokenDocument(config)) {
 `tokenIsUsable` is also available from `@call-e/core` and
 `@call-e/core/cache` for callers that already hold a token document.
 
+## Per-Request Tool Timeout
+
+`callMcpTool` accepts an optional `timeoutSeconds` override for the `tools/call`
+request:
+
+```js
+await callMcpTool({
+  config,
+  toolName: "plan_call",
+  toolArguments: { to_phones: ["+15551234567"], goal: "Confirm the appointment" },
+  timeoutSeconds: 150,
+});
+```
+
+The override applies only to the tool call. MCP session initialization keeps
+using `config.timeoutSeconds`; when the override is omitted, the tool call uses
+that configured timeout too.
+
 ## Broker Login Lifetime
 
 Broker session timing is server-directed:
