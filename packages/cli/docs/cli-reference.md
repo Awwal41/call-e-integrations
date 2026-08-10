@@ -29,18 +29,45 @@ subcommand are rejected instead of being silently ignored.
 | --- | --- | --- |
 | `calle auth login` | Start or finish brokered login and cache the token locally. | None |
 | `calle auth status` | Show local token and pending login cache status. | None |
-| `calle auth logout` | Remove local token and pending login cache files. | None |
+| `calle auth logout` | Remove local token, pending login, and call recovery cache files. | None |
 | `calle mcp config` | Print MCP client configuration JSON. | None |
 | `calle mcp tools` | List tools from the configured MCP server. | None |
 | `calle mcp call <tool-name>` | Call an arbitrary MCP tool. | `<tool-name>` |
 | `calle call plan` | Plan a phone call through `plan_call`. | `--to-phone`, `--goal` |
 | `calle call start` | Plan and run a phone call without printing confirmation data. | `--to-phone`, `--goal` |
 | `calle call run` | Run a planned phone call, then fetch status once. | `--plan-id`, `--confirm-token` |
+| `calle call recover` | Safely repeat an uncertain `run_call` with its original private confirmation data. | `--recovery-id` |
 | `calle call status` | Query a call run through `get_call_run`. | `--run-id` |
 
 If `plan_call` returns `ready_to_run: false`, `calle call start` exits without
 calling `run_call`. The JSON error uses code `plan_not_ready` and includes the
 first clarification question when available.
+
+Call workflow failures include a `stage` of `plan_call`, `run_call`, or
+`get_call_run`, plus `call_started` and `retry_safe` guidance. A `plan_call`
+failure reports `call_started: false` and is safe to retry. If `run_call` may
+have been accepted but no stable `run_id` was received, the CLI reports
+`call_started: "unknown"`, `retry_safe: false`, an opaque `recovery_id`, and a
+directly runnable `next_command`. Run that recovery command instead of starting
+a new plan:
+
+```bash
+calle call recover --recovery-id <recovery_id>
+```
+
+The corresponding `plan_id` and `confirm_token` are kept in a private local
+file with mode `0600`; they are not printed. Recovery reuses that exact pair and
+removes the record after a stable `run_id` is returned. `auth logout` also
+removes outstanding recovery records. Its JSON result reports `removed_cache`,
+`removed_pending`, and `removed_call_recoveries` booleans.
+
+If `run_call` returns a `run_id` but the first `get_call_run` query fails,
+`call start`, `call run`, and `call recover` still exit successfully with
+`ok: true`, `call_started: true`, the stable `run_id`,
+`status_query_succeeded: false`, and a structured `status_error`. Continue with
+the returned `next_command`; do not submit the call again. Server tool errors
+only expose the allowlisted `error_code`, `status`, and `message` fields, along
+with boolean `retry_safe` and boolean-or-`"unknown"` `call_started` guidance.
 
 ## Common Options
 
@@ -58,7 +85,7 @@ their network requests or output.
 | `--channel` | Text | `openagent_oauth` | All commands | No | No | MCP channel used when deriving `--server-url`. Ignored when `--server-url` is set. | `calle mcp config --channel openagent_oauth` |
 | `--client-name` | Text | `calle Login` | Auth commands | No | No | OAuth client display name sent during brokered login. | `calle auth login --client-name "calle Login"` |
 | `--scope` | Text | `openid email profile` | Auth commands | No | No | OAuth scopes requested during brokered login. | `calle auth login --scope "openid email profile"` |
-| `--cache-root` | Path | `~/.calle-mcp/cli` | All commands | No | No | Directory for token, pending login, and telemetry cache files. `~` is expanded. | `calle auth status --cache-root ~/.calle-mcp/cli` |
+| `--cache-root` | Path | `~/.calle-mcp/cli` | All commands | No | No | Directory for token, pending login, call recovery, and telemetry cache files. `~` is expanded. | `calle auth status --cache-root ~/.calle-mcp/cli` |
 | `--min-ttl-seconds` | Number | `300` | Auth login/status, MCP and call token checks | No | No | Minimum remaining token lifetime for a cached token to count as usable. | `calle auth status --min-ttl-seconds 60` |
 | `--timeout-seconds` | Number | `15`; `plan_call`: `150` | Auth, MCP, and call network requests | No | No | Request timeout in seconds. An explicit value overrides the extended `plan_call` default. | `calle mcp tools --timeout-seconds 30` |
 | `--poll-timeout-seconds` | Number | `300` | `auth login` | No | No | Maximum time to poll for brokered login completion. | `calle auth login --poll-timeout-seconds 600` |
@@ -88,9 +115,10 @@ their network requests or output.
 | `--goal` | Text | None | `call plan`, `call start` | Yes | No | Call goal or instruction for `plan_call`. | `calle call start --to-phone +15551234567 --goal "Confirm the appointment"` |
 | `--language` | Text | None | `call plan`, `call start` | No | No | Language hint passed to `plan_call`. Only provide when explicitly known. | `calle call plan --to-phone +15551234567 --goal "Confirm" --language English` |
 | `--region` | Text | None | `call plan`, `call start` | No | No | Region hint passed to `plan_call`. Only provide when explicitly known. | `calle call plan --to-phone +15551234567 --goal "Confirm" --region US` |
-| `--timezone` | IANA timezone | System timezone | `call plan`, `call start`, `call run`, `call status` | No | No | Adds planning timezone metadata for planning commands and localizes returned call timestamps for run/status commands. | `calle call status --run-id run_123 --timezone Asia/Shanghai` |
+| `--timezone` | IANA timezone | System timezone | `call plan`, `call start`, `call run`, `call recover`, `call status` | No | No | Adds planning timezone metadata for planning commands and localizes returned call timestamps for run/status commands. | `calle call status --run-id run_123 --timezone Asia/Shanghai` |
 | `--plan-id` | Text | None | `call run` | Yes | No | Planned call ID returned by `plan_call`. Preserve exactly. | `calle call run --plan-id plan_123 --confirm-token token_123` |
 | `--confirm-token` | Text | None | `call run` | Yes | No | Execution confirmation token returned by `plan_call`. Preserve exactly. | `calle call run --plan-id plan_123 --confirm-token token_123` |
+| `--recovery-id` | Opaque text | None | `call recover` | Yes | No | Private-cache lookup ID returned when `run_call` has an uncertain outcome. Use only with the returned recovery command. | `calle call recover --recovery-id <recovery_id>` |
 | `--run-id` | Text | None | `call status` | Yes | No | Call run ID returned by `run_call` or `call start`. | `calle call status --run-id run_123` |
 | `--cursor` | Text | None | `call status` | No | No | Pagination cursor for `get_call_run` activity entries. | `calle call status --run-id run_123 --cursor cursor_123` |
 | `--limit` | Positive integer | None | `call status` | No | No | Maximum number of activity entries to request. | `calle call status --run-id run_123 --limit 20` |

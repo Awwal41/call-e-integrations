@@ -5,7 +5,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { POST_AUTH_HELP_MESSAGE, preAuthHelpMessage, runCli } from "../lib/cli.js";
-import { pendingCachePath, tokenCachePath, writePrivateJson } from "../lib/cache.js";
+import {
+  callRecoveryCachePath,
+  pendingCachePath,
+  tokenCachePath,
+  writePrivateJson,
+} from "../lib/cache.js";
 import { CLI_VERSION, resolveRuntimeConfig } from "../lib/config.js";
 
 const defaultIntegrationHeader = `cli/cli/${CLI_VERSION}`;
@@ -119,6 +124,7 @@ test("prints command-specific help for every supported subcommand", async () => 
     ["call", "plan"],
     ["call", "start"],
     ["call", "run"],
+    ["call", "recover"],
     ["call", "status"],
   ];
 
@@ -844,6 +850,7 @@ test("auth logout removes token and pending cache", async () => {
   const serverUrl = "https://mcp.example/mcp/openagent_oauth";
   const tokenPath = tokenCachePath(cacheRoot, serverUrl);
   const pendingPath = pendingCachePath(cacheRoot, serverUrl);
+  const recoveryPath = callRecoveryCachePath(cacheRoot, serverUrl, "logoutRecoveryRecord123");
   writePrivateJson(tokenPath, { token: { access_token: "token" } });
   writePrivateJson(pendingPath, {
     session_id: "session-1",
@@ -852,14 +859,21 @@ test("auth logout removes token and pending cache", async () => {
     status: "PENDING",
     created_at: "2026-04-23T00:00:00Z",
   });
+  writePrivateJson(recoveryPath, {
+    schema_version: 1,
+    plan_id: "plan-secret",
+    confirm_token: "confirm-secret",
+  });
 
   const result = await run(["auth", "logout", "--base-url", "https://mcp.example", "--cache-root", cacheRoot]);
   const payload = JSON.parse(result.stdout);
 
   assert.equal(payload.removed_cache, true);
   assert.equal(payload.removed_pending, true);
+  assert.equal(payload.removed_call_recoveries, true);
   assert.equal(fs.existsSync(tokenPath), false);
   assert.equal(fs.existsSync(pendingPath), false);
+  assert.equal(fs.existsSync(recoveryPath), false);
 });
 
 test("mcp config defaults to openagent_oauth and supports overrides", async () => {
@@ -1497,8 +1511,429 @@ test("call start rejects a null structured confirm token without calling run_cal
 
   assert.equal(result.code, 1);
   assert.deepEqual(toolCalls.map((call) => call.name), ["plan_call"]);
-  assert.equal(payload.error.code, "mcp_error");
+  assert.equal(payload.stage, "plan_call");
+  assert.equal(payload.call_started, false);
+  assert.equal(payload.retry_safe, true);
+  assert.equal(payload.error.code, "plan_call_invalid_response");
   assert.equal(payload.error.message, "plan_call did not return confirm_token");
+});
+
+test("call start labels a plan_call timeout as safe to retry", async () => {
+  const cacheRoot = makeTempRoot("calle-cli-call-start-plan-timeout");
+  const serverUrl = "https://mcp.example/mcp/openagent_oauth";
+  writeToken(cacheRoot, serverUrl);
+  const fetchImpl = async (_url, init) => {
+    const payload = JSON.parse(init.body);
+    if (payload.method === "initialize") {
+      return jsonRpcResponse({ jsonrpc: "2.0", id: payload.id, result: {} });
+    }
+    if (payload.method === "notifications/initialized") {
+      return jsonRpcResponse({});
+    }
+    if (payload.method === "tools/call" && payload.params.name === "plan_call") {
+      throw new DOMException("The operation was aborted", "AbortError");
+    }
+    throw new Error(`unexpected method: ${payload.method}`);
+  };
+
+  const result = await run(
+    [
+      "call",
+      "start",
+      "--to-phone",
+      "+15551234567",
+      "--goal",
+      "Confirm appointment",
+      "--base-url",
+      "https://mcp.example",
+      "--cache-root",
+      cacheRoot,
+    ],
+    { fetchImpl }
+  );
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(result.code, 1);
+  assert.equal(payload.stage, "plan_call");
+  assert.equal(payload.call_started, false);
+  assert.equal(payload.retry_safe, true);
+  assert.equal(payload.error.code, "plan_call_timeout");
+  assert.match(payload.error.message, /plan_call timed out/);
+});
+
+test("call start preserves safe run_call error fields and an opaque recovery id", async () => {
+  const cacheRoot = makeTempRoot("calle-cli-call-start-run-error");
+  const serverUrl = "https://mcp.example/mcp/openagent_oauth";
+  writeToken(cacheRoot, serverUrl);
+  const fetchImpl = async (_url, init) => {
+    const payload = JSON.parse(init.body);
+    if (payload.method === "initialize") {
+      return jsonRpcResponse({ jsonrpc: "2.0", id: payload.id, result: {} });
+    }
+    if (payload.method === "notifications/initialized") {
+      return jsonRpcResponse({});
+    }
+    if (payload.method === "tools/call" && payload.params.name === "plan_call") {
+      return jsonRpcResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: { structuredContent: { plan_id: "plan-secret", confirm_token: "confirm-secret" } },
+      });
+    }
+    if (payload.method === "tools/call" && payload.params.name === "run_call") {
+      return jsonRpcResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: {
+          isError: true,
+          content: [{ type: "text", text: "unsafe-content service-secret" }],
+          structuredContent: {
+            error_code: "EXECUTION_ACK_LOST",
+            status: "UNKNOWN",
+            message: "Execution acknowledgement was lost.",
+            retry_safe: false,
+            call_started: "unknown",
+            internal_secret: "do-not-print",
+          },
+        },
+      });
+    }
+    throw new Error(`unexpected method: ${payload.method}`);
+  };
+
+  const result = await run(
+    [
+      "call",
+      "start",
+      "--to-phone",
+      "+15551234567",
+      "--goal",
+      "Confirm appointment",
+      "--base-url",
+      "https://mcp.example",
+      "--cache-root",
+      cacheRoot,
+    ],
+    { fetchImpl }
+  );
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(result.code, 1);
+  assert.equal(payload.stage, "run_call");
+  assert.equal(payload.call_started, "unknown");
+  assert.equal(payload.retry_safe, false);
+  assert.equal(payload.error.code, "run_call_error");
+  assert.equal(payload.error.error_code, "EXECUTION_ACK_LOST");
+  assert.equal(payload.error.status, "UNKNOWN");
+  assert.equal(payload.error.message, "Execution acknowledgement was lost.");
+  assert.match(payload.recovery_id, /^[A-Za-z0-9_-]{20,}$/u);
+  assert.match(payload.next_command, new RegExp(`calle call recover --recovery-id ${payload.recovery_id}`));
+  assert.doesNotMatch(result.stdout, /plan-secret|confirm-secret|service-secret|do-not-print/);
+});
+
+test("call run preserves safe error fields when run_call omits run_id", async () => {
+  const cacheRoot = makeTempRoot("calle-cli-call-run-missing-id");
+  const serverUrl = "https://mcp.example/mcp/openagent_oauth";
+  writeToken(cacheRoot, serverUrl);
+  const fetchImpl = async (_url, init) => {
+    const payload = JSON.parse(init.body);
+    if (payload.method === "initialize") {
+      return jsonRpcResponse({ jsonrpc: "2.0", id: payload.id, result: {} });
+    }
+    if (payload.method === "notifications/initialized") {
+      return jsonRpcResponse({});
+    }
+    if (payload.method === "tools/call" && payload.params.name === "run_call") {
+      return jsonRpcResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: {
+          structuredContent: {
+            error_code: "DESTINATION_REJECTED",
+            status: "FAILED",
+            message: "The destination was rejected.",
+            retry_safe: true,
+            call_started: false,
+            internal_secret: "do-not-print",
+          },
+        },
+      });
+    }
+    throw new Error(`unexpected method: ${payload.method}`);
+  };
+
+  const result = await run(
+    [
+      "call",
+      "run",
+      "--plan-id",
+      "plan-secret",
+      "--confirm-token",
+      "confirm-secret",
+      "--base-url",
+      "https://mcp.example",
+      "--cache-root",
+      cacheRoot,
+    ],
+    { fetchImpl }
+  );
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(result.code, 1);
+  assert.equal(payload.stage, "run_call");
+  assert.equal(payload.call_started, false);
+  assert.equal(payload.retry_safe, true);
+  assert.equal(payload.error.code, "run_call_missing_run_id");
+  assert.equal(payload.error.error_code, "DESTINATION_REJECTED");
+  assert.equal(payload.error.status, "FAILED");
+  assert.equal(payload.error.message, "The destination was rejected.");
+  assert.doesNotMatch(result.stdout, /plan-secret|confirm-secret|do-not-print/);
+});
+
+test("call recover reuses the original confirmation after a run_call timeout", async () => {
+  const cacheRoot = makeTempRoot("calle-cli-call-recover");
+  const serverUrl = "https://mcp.example/mcp/openagent_oauth";
+  writeToken(cacheRoot, serverUrl);
+  const toolCalls = [];
+  let runAttempts = 0;
+  const fetchImpl = async (_url, init) => {
+    const payload = JSON.parse(init.body);
+    if (payload.method === "initialize") {
+      return jsonRpcResponse({ jsonrpc: "2.0", id: payload.id, result: {} });
+    }
+    if (payload.method === "notifications/initialized") {
+      return jsonRpcResponse({});
+    }
+    if (payload.method === "tools/call") {
+      toolCalls.push(payload.params);
+      if (payload.params.name === "plan_call") {
+        return jsonRpcResponse({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: { structuredContent: { plan_id: "plan-secret", confirm_token: "confirm-secret" } },
+        });
+      }
+      if (payload.params.name === "run_call") {
+        runAttempts += 1;
+        if (runAttempts === 1) {
+          throw new DOMException("The operation was aborted", "AbortError");
+        }
+        return jsonRpcResponse({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            structuredContent: {
+              run_id: "run-1",
+              status: "STARTED",
+              confirm_token: "confirm-secret",
+              internal_secret: "do-not-print",
+            },
+          },
+        });
+      }
+      if (payload.params.name === "get_call_run") {
+        return jsonRpcResponse({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: { structuredContent: { run_id: "run-1", status: "IN_PROGRESS" } },
+        });
+      }
+    }
+    throw new Error(`unexpected method: ${payload.method}`);
+  };
+
+  const firstResult = await run(
+    [
+      "call",
+      "start",
+      "--to-phone",
+      "+15551234567",
+      "--goal",
+      "Confirm appointment",
+      "--base-url",
+      "https://mcp.example",
+      "--cache-root",
+      cacheRoot,
+    ],
+    { fetchImpl }
+  );
+  const firstPayload = JSON.parse(firstResult.stdout);
+
+  assert.equal(firstResult.code, 1);
+  assert.equal(firstPayload.error.code, "run_call_timeout");
+  assert.equal(firstPayload.call_started, "unknown");
+  assert.equal(firstPayload.retry_safe, false);
+  assert.doesNotMatch(firstResult.stdout, /plan-secret|confirm-secret/);
+  assert.equal(
+    fs.statSync(callRecoveryCachePath(cacheRoot, serverUrl, firstPayload.recovery_id)).mode & 0o777,
+    0o600
+  );
+
+  const recoveredResult = await run(
+    [
+      "call",
+      "recover",
+      "--recovery-id",
+      firstPayload.recovery_id,
+      "--base-url",
+      "https://mcp.example",
+      "--cache-root",
+      cacheRoot,
+    ],
+    { fetchImpl }
+  );
+  const recoveredPayload = JSON.parse(recoveredResult.stdout);
+
+  assert.equal(recoveredResult.code, 0);
+  assert.equal(recoveredPayload.ok, true);
+  assert.equal(recoveredPayload.run_id, "run-1");
+  assert.deepEqual(toolCalls.map((call) => call.name), ["plan_call", "run_call", "run_call", "get_call_run"]);
+  assert.deepEqual(toolCalls[1].arguments, { plan_id: "plan-secret", confirm_token: "confirm-secret" });
+  assert.deepEqual(toolCalls[2].arguments, toolCalls[1].arguments);
+  assert.doesNotMatch(recoveredResult.stdout, /plan-secret|confirm-secret|do-not-print/);
+
+  const repeatedRecovery = await run(
+    [
+      "call",
+      "recover",
+      "--recovery-id",
+      firstPayload.recovery_id,
+      "--base-url",
+      "https://mcp.example",
+      "--cache-root",
+      cacheRoot,
+    ],
+    { fetchImpl: async () => { throw new Error("recovery should not contact MCP"); } }
+  );
+  assert.equal(repeatedRecovery.code, 1);
+  assert.equal(JSON.parse(repeatedRecovery.stdout).error.code, "recovery_not_found");
+});
+
+test("call start returns an accepted run_id when get_call_run times out", async () => {
+  const cacheRoot = makeTempRoot("calle-cli-call-start-status-timeout");
+  const serverUrl = "https://mcp.example/mcp/openagent_oauth";
+  writeToken(cacheRoot, serverUrl);
+  const fetchImpl = async (_url, init) => {
+    const payload = JSON.parse(init.body);
+    if (payload.method === "initialize") {
+      return jsonRpcResponse({ jsonrpc: "2.0", id: payload.id, result: {} });
+    }
+    if (payload.method === "notifications/initialized") {
+      return jsonRpcResponse({});
+    }
+    if (payload.method === "tools/call" && payload.params.name === "plan_call") {
+      return jsonRpcResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: { structuredContent: { plan_id: "plan-secret", confirm_token: "confirm-secret" } },
+      });
+    }
+    if (payload.method === "tools/call" && payload.params.name === "run_call") {
+      return jsonRpcResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: {
+          structuredContent: {
+            run_id: "run-1",
+            status: "STARTED",
+            confirm_token: "confirm-secret",
+            internal_secret: "do-not-print",
+          },
+        },
+      });
+    }
+    if (payload.method === "tools/call" && payload.params.name === "get_call_run") {
+      throw new DOMException("The operation was aborted", "AbortError");
+    }
+    throw new Error(`unexpected method: ${payload.method}`);
+  };
+
+  const result = await run(
+    [
+      "call",
+      "start",
+      "--to-phone",
+      "+15551234567",
+      "--goal",
+      "Confirm appointment",
+      "--base-url",
+      "https://mcp.example",
+      "--cache-root",
+      cacheRoot,
+    ],
+    { fetchImpl }
+  );
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(result.code, 0);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.call_started, true);
+  assert.equal(payload.run_id, "run-1");
+  assert.equal(payload.status_query_succeeded, false);
+  assert.equal(payload.status_result, null);
+  assert.equal(payload.status_error.stage, "get_call_run");
+  assert.equal(payload.status_error.code, "get_call_run_timeout");
+  assert.match(payload.next_command, /calle call status --run-id run-1/);
+  assert.doesNotMatch(result.stdout, /plan-secret|confirm-secret|do-not-print/);
+});
+
+test("call run filters the run_call response when get_call_run times out", async () => {
+  const cacheRoot = makeTempRoot("calle-cli-call-run-status-timeout");
+  const serverUrl = "https://mcp.example/mcp/openagent_oauth";
+  writeToken(cacheRoot, serverUrl);
+  const fetchImpl = async (_url, init) => {
+    const payload = JSON.parse(init.body);
+    if (payload.method === "initialize") {
+      return jsonRpcResponse({ jsonrpc: "2.0", id: payload.id, result: {} });
+    }
+    if (payload.method === "notifications/initialized") {
+      return jsonRpcResponse({});
+    }
+    if (payload.method === "tools/call" && payload.params.name === "run_call") {
+      return jsonRpcResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: {
+          structuredContent: {
+            run_id: "run-1",
+            status: "STARTED",
+            confirm_token: "confirm-secret",
+            internal_secret: "do-not-print",
+          },
+        },
+      });
+    }
+    if (payload.method === "tools/call" && payload.params.name === "get_call_run") {
+      throw new DOMException("The operation was aborted", "AbortError");
+    }
+    throw new Error(`unexpected method: ${payload.method}`);
+  };
+
+  const result = await run(
+    [
+      "call",
+      "run",
+      "--plan-id",
+      "plan-secret",
+      "--confirm-token",
+      "confirm-secret",
+      "--base-url",
+      "https://mcp.example",
+      "--cache-root",
+      cacheRoot,
+    ],
+    { fetchImpl }
+  );
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(result.code, 0);
+  assert.equal(payload.run_id, "run-1");
+  assert.equal(payload.result.structuredContent.run_id, "run-1");
+  assert.equal(payload.result.structuredContent.status, "STARTED");
+  assert.equal(payload.run_result, undefined);
+  assert.equal(payload.status_query_succeeded, false);
+  assert.equal(payload.status_error.code, "get_call_run_timeout");
+  assert.doesNotMatch(result.stdout, /plan-secret|confirm-secret|do-not-print/);
 });
 
 test("call run invokes run_call then get_call_run once", async () => {

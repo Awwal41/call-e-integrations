@@ -47,6 +47,7 @@ calle call plan --help
 calle call plan --to-phone +15551234567 --goal "Confirm the appointment"
 calle call start --to-phone +15551234567 --goal "Confirm the appointment"
 calle call run --plan-id <plan_id> --confirm-token <confirm_token>
+calle call recover --recovery-id <recovery_id>
 calle call status --run-id <run_id>
 ```
 
@@ -94,6 +95,13 @@ tools.
 For agent-facing outbound calls, prefer `calle call start`. It performs
 planning and execution inside one CLI invocation and does not print execution
 confirmation data.
+
+If execution may have been accepted but no `run_id` was received, the CLI
+returns `retry_safe: false` with an opaque `recovery_id` and a `next_command`.
+Run that command instead of repeating `call start`; it securely reuses the
+original confirmation context without printing it. If only the initial status
+query fails, the command still returns the accepted `run_id` and a `call status`
+`next_command`.
 
 Successful command stdout is JSON except `--help`. Some top-level or local
 failures may print plain stderr. Access tokens are read from the local cache and

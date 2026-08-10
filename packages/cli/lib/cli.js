@@ -1,12 +1,17 @@
 import {
+  isCallRecoveryId,
   pendingCachePath,
   pendingIsExpired,
+  readCallRecovery,
   readJson,
   readPendingLogin,
+  removeCallRecoveries,
+  removeCallRecovery,
   removeFile,
   removeTokenCache,
   tokenCachePath,
   tokenIsUsable,
+  writeCallRecovery,
 } from "./cache.js";
 import {
   DEFAULT_BASE_URL,
@@ -38,6 +43,28 @@ function resolveCliRuntimeConfig(options, env) {
     return resolveRuntimeConfig(options, env);
   } catch (error) {
     throw new InvalidArgumentsError(error?.message || String(error));
+  }
+}
+
+class CallStageError extends McpHttpError {
+  constructor(message, {
+    stage,
+    code,
+    statusCode = null,
+    callStarted,
+    retrySafe,
+    recoveryId = null,
+    nextCommand = null,
+    remoteError = null,
+  }) {
+    super(message, { code, statusCode });
+    this.name = "CallStageError";
+    this.stage = stage;
+    this.callStarted = callStarted;
+    this.retrySafe = retrySafe;
+    this.recoveryId = recoveryId;
+    this.nextCommand = nextCommand;
+    this.remoteError = remoteError;
   }
 }
 export function preAuthHelpMessage(loginUrl) {
@@ -84,7 +111,7 @@ const COMMAND_GROUPS = {
         examples: ["calle auth status"],
       },
       logout: {
-        summary: "Remove local token and pending login cache",
+        summary: "Remove local token, login, and call recovery cache",
         usage: "calle auth logout [options]",
         examples: ["calle auth logout"],
       },
@@ -157,6 +184,15 @@ const COMMAND_GROUPS = {
         ],
         examples: ["calle call run --plan-id plan_123 --confirm-token token_123"],
       },
+      recover: {
+        summary: "Safely recover an uncertain run_call submission",
+        usage: "calle call recover --recovery-id <id> [options]",
+        options: [
+          "  --recovery-id <id>            Required; opaque recovery ID returned by call start/run",
+          "  --timezone <iana>             Local timezone for returned call timestamps",
+        ],
+        examples: ["calle call recover --recovery-id <recovery_id>"],
+      },
       status: {
         summary: "Query a call run via get_call_run",
         usage: "calle call status --run-id <id> [options]",
@@ -202,6 +238,7 @@ const COMMAND_OPTION_NAMES = {
   "call plan": new Set(["to-phone", "goal", "language", "region", "timezone"]),
   "call start": new Set(["to-phone", "goal", "language", "region", "timezone"]),
   "call run": new Set(["plan-id", "confirm-token", "timezone"]),
+  "call recover": new Set(["recovery-id", "timezone"]),
   "call status": new Set(["run-id", "cursor", "limit", "timezone"]),
 };
 
@@ -721,6 +758,23 @@ function callStatusCommand(config, runId, timezone = null) {
     .join(" ");
 }
 
+function callRecoveryCommand(config, recoveryId, timezone = null) {
+  return [
+    "calle",
+    "call",
+    "recover",
+    "--recovery-id",
+    recoveryId,
+    ...(timezone ? ["--timezone", timezone] : []),
+    "--server-url",
+    config.serverUrl,
+    "--cache-root",
+    config.cacheRoot,
+  ]
+    .map(shellQuote)
+    .join(" ");
+}
+
 function isActivePendingLogin(pending) {
   return Boolean(pending && (pending.status === "PENDING" || pending.status === "AUTHORIZED") && !pendingIsExpired(pending));
 }
@@ -771,22 +825,44 @@ function errorPayload(error, config, helpCommand = null) {
   }
 
   if (error instanceof AuthRequiredError || isUnauthorizedMcpError(error)) {
+    const stageContext = error?.stage ? {
+      stage: error.stage,
+      call_started: error.callStarted,
+      retry_safe: error.retrySafe,
+      ...(error.recoveryId ? { recovery_id: error.recoveryId } : {}),
+      ...(error.nextCommand ? { next_command: error.nextCommand } : {}),
+    } : {};
     return {
       exitCode: 1,
-      body: authRequiredPayload(config, error.message),
+      body: {
+        ...authRequiredPayload(config, error.message),
+        ...stageContext,
+      },
     };
   }
 
   if (error instanceof McpHttpError) {
+    const remoteError = error instanceof CallStageError && error.remoteError
+      ? error.remoteError
+      : null;
     return {
       exitCode: 1,
       body: {
         ok: false,
         server_url: config?.serverUrl ?? null,
+        ...(error instanceof CallStageError ? {
+          stage: error.stage,
+          call_started: error.callStarted,
+          retry_safe: error.retrySafe,
+          ...(error.recoveryId ? { recovery_id: error.recoveryId } : {}),
+          ...(error.nextCommand ? { next_command: error.nextCommand } : {}),
+        } : {}),
         error: {
           code: error.code || "mcp_error",
           message: error.message,
           status_code: error.statusCode,
+          ...(remoteError?.error_code !== undefined ? { error_code: remoteError.error_code } : {}),
+          ...(remoteError?.status !== undefined ? { status: remoteError.status } : {}),
         },
       },
     };
@@ -928,6 +1004,124 @@ function structuredPayload(result) {
   return result?.structuredContent || result?.structured_content || result || {};
 }
 
+function safeRemoteString(value, maxLength = 1000) {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+  return value.trim().slice(0, maxLength);
+}
+
+function safeRemoteCallError(result) {
+  const structured = recordObject(structuredPayload(result)) || {};
+  const nestedError = recordObject(structured.error) || {};
+  const field = (name) => nestedError[name] ?? structured[name];
+  const errorCodeValue = field("error_code") ?? field("code");
+  const errorCode = typeof errorCodeValue === "number"
+    ? errorCodeValue
+    : safeRemoteString(errorCodeValue, 200);
+  const statusValue = field("status");
+  const status = typeof statusValue === "number"
+    ? statusValue
+    : safeRemoteString(statusValue, 200);
+  const message = safeRemoteString(field("message"));
+  const retrySafe = typeof field("retry_safe") === "boolean" ? field("retry_safe") : undefined;
+  const callStartedValue = field("call_started");
+  const callStarted = typeof callStartedValue === "boolean" || callStartedValue === "unknown"
+    ? callStartedValue
+    : undefined;
+  return {
+    ...(errorCode !== undefined ? { error_code: errorCode } : {}),
+    ...(status !== undefined ? { status } : {}),
+    ...(message !== undefined ? { message } : {}),
+    ...(retrySafe !== undefined ? { retry_safe: retrySafe } : {}),
+    ...(callStarted !== undefined ? { call_started: callStarted } : {}),
+  };
+}
+
+function callStageErrorFrom(error, {
+  stage,
+  callStarted,
+  retrySafe,
+  recoveryId = null,
+  nextCommand = null,
+}) {
+  if (error instanceof CallStageError) {
+    return error;
+  }
+  const timedOut = error instanceof McpHttpError && /timed out/iu.test(error.message);
+  const remoteError = error instanceof McpHttpError && error.payload
+    ? safeRemoteCallError(error.payload)
+    : null;
+  return new CallStageError(
+    timedOut
+      ? `${stage} timed out before the CLI received a response.`
+      : remoteError?.message || `${stage} failed: ${error?.message || String(error)}`,
+    {
+      stage,
+      code: timedOut ? `${stage}_timeout` : `${stage}_error`,
+      statusCode: error instanceof McpHttpError ? error.statusCode : null,
+      callStarted: remoteError?.call_started ?? callStarted,
+      retrySafe: remoteError?.retry_safe ?? retrySafe,
+      recoveryId,
+      nextCommand,
+      remoteError,
+    }
+  );
+}
+
+async function callCallStage({
+  config,
+  deps,
+  stage,
+  toolArguments,
+  requestMeta = null,
+  timeoutSeconds = null,
+  callStarted,
+  retrySafe,
+  recoveryId = null,
+  nextCommand = null,
+}) {
+  try {
+    const result = await callMcpTool({
+      config,
+      toolName: stage,
+      toolArguments,
+      requestMeta,
+      timeoutSeconds,
+      fetchImpl: deps.fetchImpl || globalThis.fetch,
+    });
+    if (result?.isError === true) {
+      const remoteError = safeRemoteCallError(result);
+      throw new CallStageError(remoteError.message || `${stage} returned an error.`, {
+        stage,
+        code: `${stage}_error`,
+        callStarted: remoteError.call_started ?? callStarted,
+        retrySafe: remoteError.retry_safe ?? retrySafe,
+        recoveryId,
+        nextCommand,
+        remoteError,
+      });
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof AuthRequiredError || isUnauthorizedMcpError(error)) {
+      error.stage = stage;
+      error.callStarted = callStarted;
+      error.retrySafe = retrySafe;
+      error.recoveryId = recoveryId;
+      error.nextCommand = nextCommand;
+      throw error;
+    }
+    throw callStageErrorFrom(error, {
+      stage,
+      callStarted,
+      retrySafe,
+      recoveryId,
+      nextCommand,
+    });
+  }
+}
+
 function extractRequiredStructuredString(result, fieldName, context) {
   const structured = structuredPayload(result);
   const value = structured?.[fieldName];
@@ -981,24 +1175,123 @@ function mcpToolTimeoutSeconds({ config, options, toolName }) {
   return config.timeoutSeconds;
 }
 
-async function runPlannedCallAndFetchStatus({ config, deps, planId, confirmToken }) {
-  const runResult = await callMcpTool({
+async function runPlannedCall({ config, deps, planId, confirmToken, timezone = null, recoveryId = null }) {
+  let activeRecoveryId = recoveryId;
+  if (!activeRecoveryId) {
+    try {
+      activeRecoveryId = writeCallRecovery(config, { planId, confirmToken, timezone });
+    } catch {
+      throw new CallStageError("Could not save a private recovery record; run_call was not submitted.", {
+        stage: "run_call",
+        code: "recovery_storage_error",
+        callStarted: false,
+        retrySafe: true,
+      });
+    }
+  }
+  const nextCommand = callRecoveryCommand(config, activeRecoveryId, timezone);
+  const runResult = await callCallStage({
     config,
-    toolName: "run_call",
+    deps,
+    stage: "run_call",
     toolArguments: { plan_id: planId, confirm_token: confirmToken },
-    fetchImpl: deps.fetchImpl || globalThis.fetch,
+    callStarted: "unknown",
+    retrySafe: false,
+    recoveryId: activeRecoveryId,
+    nextCommand,
   });
   const runId = extractRunId(runResult);
   if (!runId) {
-    throw new McpHttpError("run_call did not return a run_id", { code: "mcp_error", payload: runResult });
+    const remoteError = safeRemoteCallError(runResult);
+    throw new CallStageError(remoteError.message || "run_call did not return a run_id.", {
+      stage: "run_call",
+      code: "run_call_missing_run_id",
+      callStarted: remoteError.call_started ?? "unknown",
+      retrySafe: remoteError.retry_safe ?? false,
+      recoveryId: activeRecoveryId,
+      nextCommand,
+      remoteError,
+    });
   }
-  const statusResult = await callMcpTool({
+  removeCallRecovery(config, activeRecoveryId);
+  return { runResult, runId };
+}
+
+async function fetchCallStatus({ config, deps, runId }) {
+  return callCallStage({
     config,
-    toolName: "get_call_run",
+    deps,
+    stage: "get_call_run",
     toolArguments: { run_id: runId },
-    fetchImpl: deps.fetchImpl || globalThis.fetch,
+    callStarted: true,
+    retrySafe: true,
   });
-  return { runResult, runId, statusResult };
+}
+
+async function fetchCallStatusBestEffort({ config, deps, runId }) {
+  try {
+    return {
+      statusResult: await fetchCallStatus({ config, deps, runId }),
+      statusError: null,
+    };
+  } catch (error) {
+    invalidateTokenIfMcpRejected(error, config);
+    const formatted = errorPayload(error, config).body;
+    return {
+      statusResult: null,
+      statusError: {
+        stage: error instanceof CallStageError ? error.stage : "get_call_run",
+        ...formatted.error,
+        retry_safe: error instanceof CallStageError ? error.retrySafe : true,
+      },
+    };
+  }
+}
+
+function safeRunAcknowledgement(runResult, runId) {
+  const structured = recordObject(structuredPayload(runResult)) || {};
+  const status = typeof structured.status === "number"
+    ? structured.status
+    : safeRemoteString(structured.status, 200);
+  const message = safeRemoteString(structured.message);
+  return {
+    structuredContent: {
+      run_id: runId,
+      ...(status !== undefined ? { status } : {}),
+      ...(message !== undefined ? { message } : {}),
+    },
+  };
+}
+
+async function writeRunCallSuccess({
+  config,
+  deps,
+  stdout,
+  options,
+  runResult,
+  runId,
+  statusTimezone,
+  includeRunResult,
+}) {
+  const { statusResult, statusError } = await fetchCallStatusBestEffort({ config, deps, runId });
+  if (statusResult) {
+    localizeCallStatusResultTimestamps(statusResult, options, deps.env || process.env);
+  }
+  const exposeRunResult = includeRunResult && statusError === null;
+  const publicRunResult = exposeRunResult ? runResult : safeRunAcknowledgement(runResult, runId);
+  writeJson(stdout, {
+    ok: true,
+    server_url: config.serverUrl,
+    tool_name: "run_call",
+    call_started: true,
+    result: statusResult || publicRunResult,
+    run_id: runId,
+    ...(exposeRunResult ? { run_result: runResult } : {}),
+    status_query_succeeded: statusError === null,
+    status_result: statusResult,
+    ...(statusError ? { status_error: statusError } : {}),
+    next_command: callStatusCommand(config, runId, statusTimezone),
+  });
 }
 
 async function handleMcpCommand({ command, positional, options, config, deps, stdout, stderr, captureTelemetry }) {
@@ -1056,13 +1349,15 @@ async function handleCallCommand({ command, positional, options, config, deps, s
 
     if (command === "plan") {
       const toolName = "plan_call";
-      const result = await callMcpTool({
+      const result = await callCallStage({
         config,
-        toolName,
+        deps,
+        stage: toolName,
         toolArguments: buildPlanArguments(options),
         requestMeta: buildPlanRequestMeta(options, deps.env || process.env),
         timeoutSeconds: mcpToolTimeoutSeconds({ config, options, toolName }),
-        fetchImpl: deps.fetchImpl || globalThis.fetch,
+        callStarted: false,
+        retrySafe: true,
       });
       writeJson(stdout, mcpSuccessPayload({ config, toolName, result }));
       return 0;
@@ -1070,41 +1365,60 @@ async function handleCallCommand({ command, positional, options, config, deps, s
 
     if (command === "start") {
       const statusTimezone = resolvePlanTimezone(options, deps.env || process.env);
-      const planResult = await callMcpTool({
+      const planResult = await callCallStage({
         config,
-        toolName: "plan_call",
+        deps,
+        stage: "plan_call",
         toolArguments: buildPlanArguments(options),
         requestMeta: buildPlanRequestMeta(options, deps.env || process.env),
         timeoutSeconds: mcpToolTimeoutSeconds({ config, options, toolName: "plan_call" }),
-        fetchImpl: deps.fetchImpl || globalThis.fetch,
+        callStarted: false,
+        retrySafe: true,
       });
       const structuredPlan = structuredPayload(planResult);
       if (structuredPlan.ready_to_run === false) {
         const question = Array.isArray(structuredPlan.clarifying_questions)
           ? structuredPlan.clarifying_questions.find((item) => typeof item === "string" && item.trim())?.trim()
           : null;
-        throw new McpHttpError(
+        throw new CallStageError(
           `Call plan needs more information before it can run${question ? `: ${question}` : "."}`,
-          { code: "plan_not_ready", payload: planResult }
+          {
+            stage: "plan_call",
+            code: "plan_not_ready",
+            callStarted: false,
+            retrySafe: true,
+          }
         );
       }
-      const planId = extractRequiredStructuredString(planResult, "plan_id", "plan_call");
-      const confirmToken = extractRequiredStructuredString(planResult, "confirm_token", "plan_call");
-      const { runId, statusResult } = await runPlannedCallAndFetchStatus({
+      let planId;
+      let confirmToken;
+      try {
+        planId = extractRequiredStructuredString(planResult, "plan_id", "plan_call");
+        confirmToken = extractRequiredStructuredString(planResult, "confirm_token", "plan_call");
+      } catch (error) {
+        throw new CallStageError(error.message, {
+          stage: "plan_call",
+          code: "plan_call_invalid_response",
+          callStarted: false,
+          retrySafe: true,
+        });
+      }
+      const { runResult, runId } = await runPlannedCall({
         config,
         deps,
         planId,
         confirmToken,
+        timezone: statusTimezone,
       });
-      localizeCallStatusResultTimestamps(statusResult, options, deps.env || process.env);
-      writeJson(stdout, {
-        ok: true,
-        server_url: config.serverUrl,
-        tool_name: "run_call",
-        result: statusResult,
-        run_id: runId,
-        status_result: statusResult,
-        next_command: callStatusCommand(config, runId, statusTimezone),
+      await writeRunCallSuccess({
+        config,
+        deps,
+        stdout,
+        options,
+        runResult,
+        runId,
+        statusTimezone,
+        includeRunResult: false,
       });
       return 0;
     }
@@ -1112,33 +1426,71 @@ async function handleCallCommand({ command, positional, options, config, deps, s
     if (command === "run") {
       const statusTimezone = resolvePlanTimezone(options, deps.env || process.env);
       const runArguments = buildRunArguments(options);
-      const { runResult, runId, statusResult } = await runPlannedCallAndFetchStatus({
+      const { runResult, runId } = await runPlannedCall({
         config,
         deps,
         planId: runArguments.plan_id,
         confirmToken: runArguments.confirm_token,
+        timezone: statusTimezone,
       });
-      localizeCallStatusResultTimestamps(statusResult, options, deps.env || process.env);
-      writeJson(stdout, {
-        ok: true,
-        server_url: config.serverUrl,
-        tool_name: "run_call",
-        result: statusResult,
-        run_id: runId,
-        run_result: runResult,
-        status_result: statusResult,
-        next_command: callStatusCommand(config, runId, statusTimezone),
+      await writeRunCallSuccess({
+        config,
+        deps,
+        stdout,
+        options,
+        runResult,
+        runId,
+        statusTimezone,
+        includeRunResult: true,
+      });
+      return 0;
+    }
+
+    if (command === "recover") {
+      const recoveryId = requireStringOption(options, "recoveryId", "--recovery-id");
+      if (!isCallRecoveryId(recoveryId)) {
+        throw new InvalidArgumentsError("--recovery-id is invalid");
+      }
+      const recovery = readCallRecovery(config, recoveryId);
+      if (!recovery) {
+        throw new McpHttpError("No private recovery record exists for this recovery ID.", {
+          code: "recovery_not_found",
+        });
+      }
+      const recoveryOptions = optionalStringOption(options, "timezone") || !recovery.timezone
+        ? options
+        : { ...options, timezone: recovery.timezone };
+      const statusTimezone = resolvePlanTimezone(recoveryOptions, deps.env || process.env);
+      const { runResult, runId } = await runPlannedCall({
+        config,
+        deps,
+        planId: recovery.planId,
+        confirmToken: recovery.confirmToken,
+        timezone: statusTimezone,
+        recoveryId,
+      });
+      await writeRunCallSuccess({
+        config,
+        deps,
+        stdout,
+        options: recoveryOptions,
+        runResult,
+        runId,
+        statusTimezone,
+        includeRunResult: false,
       });
       return 0;
     }
 
     if (command === "status") {
       const toolName = "get_call_run";
-      const result = await callMcpTool({
+      const result = await callCallStage({
         config,
-        toolName,
+        deps,
+        stage: toolName,
         toolArguments: buildStatusArguments(options),
-        fetchImpl: deps.fetchImpl || globalThis.fetch,
+        callStarted: true,
+        retrySafe: true,
       });
       localizeCallStatusResultTimestamps(result, options, deps.env || process.env);
       writeJson(stdout, mcpSuccessPayload({ config, toolName, result }));
@@ -1305,12 +1657,14 @@ async function runCliCommand(argv, deps = {}) {
     const pendingDocument = readJson(pendingPath);
     removeFile(cachePath);
     removeFile(pendingPath);
+    const removedRecoveries = removeCallRecoveries(config);
     writeJson(stdout, {
       server_url: config.serverUrl,
       cache_path: cachePath,
       pending_cache_path: pendingPath,
       removed_cache: cacheDocument !== null,
       removed_pending: pendingDocument !== null,
+      removed_call_recoveries: removedRecoveries,
     });
     return 0;
   }
