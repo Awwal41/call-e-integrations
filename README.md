@@ -354,7 +354,7 @@ Use these country codes with the SDK and API recipient settings.
 | --- | --- | --- | --- | --- |
 | United States of America | `US` | +1 | English | Local |
 | Singapore | `SG` | +65 | English | Local |
-| Malaysia | `MY` | +60 | English | Local |
+| Malaysia | `MY` | +60 | English, Chinese | Local |
 | India | `IN` | +91 | English, Hindi | Local |
 | United Arab Emirates | `AE` | +971 | English, Arabic | Local |
 | Australia | `AU` | +61 | English | Local |
@@ -380,6 +380,12 @@ Use these country codes with the SDK and API recipient settings.
 | Mozambique | `MZ` | +258 | English, Portuguese | International |
 | Saudi Arabia | `SA` | +966 | English, Arabic | International |
 | Finland | `FI` | +358 | English | International |
+| Ukraine | `UA` | +380 | English, Ukrainian | International |
+| Sri Lanka | `LK` | +94 | English, Tamil | International |
+| Botswana | `BW` | +267 | English | International |
+| Pakistan | `PK` | +92 | English, Urdu | International |
+| Turkey | `TR` | +90 | Turkish | International |
+| Honduras | `HN` | +504 | English, Spanish | International |
 
 **Notes**
 
