@@ -68,3 +68,59 @@ get_call_run
 If the same URL works from the user's terminal but fails only inside the Cursor
 agent shell, the issue is the Cursor sandbox policy rather than CALL-E service
 availability.
+
+## `calle call plan` fails with `MCP request timed out for tools/call`
+
+### Symptoms
+
+`calle call plan` exits with this error while authentication and MCP tool
+discovery still work:
+
+```text
+MCP request timed out for tools/call
+```
+
+### Cause
+
+The `plan_call` request took longer than the CLI's effective request timeout.
+Current CLI releases allow 150 seconds for `plan_call` by default while keeping
+the shared 15-second default for other MCP requests. Older CLI releases used
+the shared 15-second timeout for planning too. An explicit
+`--timeout-seconds` value overrides either default.
+
+This is a client-side timeout, not an authentication error. Planning does not
+place a call, so it is safe to retry after adjusting the timeout.
+
+### Fix
+
+Check the defaults reported by the installed CLI:
+
+```bash
+calle call plan --help
+```
+
+If the command used an explicit timeout shorter than planning needs, remove the
+flag to use the current planning default or retry with a longer value:
+
+```bash
+calle call plan \
+  --to-phone +15551234567 \
+  --goal "Confirm the appointment" \
+  --timeout-seconds 300
+```
+
+If help reports only the 15-second shared default for planning, update the CLI
+and retry:
+
+```bash
+npm install -g @call-e/cli
+```
+
+See the [CLI reference](../../packages/cli/docs/cli-reference.md#common-options)
+for the canonical timeout defaults and option behavior.
+
+### Verify
+
+A successful retry prints the planned call payload as JSON. Review the plan and
+continue through the normal confirmation flow; do not treat a successful plan
+as evidence that a call has already started.
