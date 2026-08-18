@@ -69,6 +69,102 @@ If the same URL works from the user's terminal but fails only inside the Cursor
 agent shell, the issue is the Cursor sandbox policy rather than CALL-E service
 availability.
 
+## Run CALL-E from Node on Windows
+
+### Symptoms
+
+A Node integration on Windows may abort while its host process exits with this
+libuv assertion:
+
+```text
+Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94
+```
+
+This has been observed when the same long-running Node process starts CALL-E
+with asynchronous `spawn()` handles and also uses a synchronous child process,
+such as `execSync("npm root -g")`, to discover the CLI entry point.
+
+A separate shell-launch symptom can occur when a multiline `--goal` is sent
+through `cmd /c`: `cmd.exe` may split or reinterpret the arguments before the
+CLI receives them, sometimes surfacing as `Unknown option: --to-phone`.
+
+### Cause
+
+In the reported configuration, the assertion came from Node/libuv teardown in
+the embedding process after synchronous and asynchronous child-process paths
+were mixed. It is not evidence that the CALL-E CLI rejected the request or
+failed internally. The same assertion can have other causes, so apply this
+guidance when the host matches the child-process pattern above.
+
+The multiline failure is related but distinct: a command shell parses the
+command string before CALL-E sees it, so newlines and quoting may change the
+argument boundaries.
+
+### Fix
+
+Keep the embedded CLI launch asynchronous and shell-free from discovery through
+process exit:
+
+1. Install `@call-e/cli` as a dependency of the embedding application and
+   resolve its published JavaScript entry point during application startup.
+2. Start that entry point with the current Node executable and asynchronous
+   `spawn()`.
+3. Pass every CLI token as a separate array element, including the complete
+   multiline goal as one element.
+4. Set `shell: false` and wait for the child process to close before tearing
+   down the host.
+
+```js
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const cliEntry = require.resolve("@call-e/cli/bin/calle.js");
+
+export async function planCall({ phone, goal }) {
+  const child = spawn(
+    process.execPath,
+    [
+      cliEntry,
+      "call",
+      "plan",
+      "--to-phone",
+      phone,
+      "--goal",
+      goal,
+    ],
+    {
+      shell: false,
+      stdio: "inherit",
+      windowsHide: true,
+    },
+  );
+
+  const [exitCode] = await once(child, "close");
+  if (exitCode !== 0) {
+    throw new Error(`calle call plan exited with code ${exitCode}`);
+  }
+}
+```
+
+Do not route this integration path through `cmd /c`, a PowerShell command
+string, or a package-manager command shim. Do not run
+`execSync("npm root -g")` while the host still owns live asynchronous child
+handles. If a global CLI install is unavoidable, resolve its absolute entry
+path outside the long-running host, inject it as application configuration, and
+validate it before starting concurrent child work.
+
+### Verify
+
+First use the same launch pattern with `call plan --help`; this verifies the
+shell-free child path and normal process exit without a network request. Then
+use `calle call plan` with a multiline goal; planning does not place a call.
+Confirm that the integration no longer reports shell argument-parsing errors
+and that the child and host processes exit normally. If the assertion remains
+in an integration that does not match the pattern above, investigate that
+host's other child handles and teardown paths separately.
+
 ## `calle call plan` fails with `MCP request timed out for tools/call`
 
 ### Symptoms
