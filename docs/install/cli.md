@@ -69,3 +69,6 @@ error output includes the corresponding `help_command` to run.
 See [packages/cli/README.md](../../packages/cli/README.md) for package usage
 details, and [packages/cli/docs/cli-reference.md](../../packages/cli/docs/cli-reference.md)
 for the canonical command and option reference.
+
+When embedding the CLI in a Node application on Windows, follow the
+[shell-free child-process guidance](./troubleshooting.md#run-call-e-from-node-on-windows).
