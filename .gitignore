@@ -34,5 +34,6 @@ logs/
 # Editors and tooling
 .idea/
 .vscode/
+.cursor/
 .cursorignore
 .cursorindexingignore
