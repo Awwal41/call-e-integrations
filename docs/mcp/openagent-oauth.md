@@ -161,9 +161,56 @@ Important inputs:
 - `limit`: optional maximum number of activity entries to return.
 
 The response can include status, activity, summary, details, transcript, and
-`next_step` guidance. After a new call starts, wait about 60 seconds before the
-first status query, then poll every 5-10 seconds until the run reaches a
-terminal state or `next_step` says otherwise.
+`next_step` guidance. Follow the workflow below until the run reaches a
+terminal state.
+
+### Reliable terminal-state workflow
+
+`run_call` is asynchronous and can return before the run reaches a terminal
+state. The returned `run_id` identifies the run for subsequent status checks.
+A status such as `PREPARING` indicates progress; it is not a final result.
+
+Use this completion workflow:
+
+1. Store the exact `run_id` with the application record that requested the
+   call.
+2. Make the first `get_call_run` request after about 60 seconds. After that,
+   follow `next_step` when present or poll every 5–10 seconds.
+3. Treat every non-terminal status as progress, not as the final result.
+4. If the client reaches its monitoring deadline, disconnects, or restarts,
+   retain the `run_id` and resume `get_call_run`. Do not mark the call as
+   failed or call `run_call` again.
+5. When a terminal status is returned, persist the response and stop polling.
+
+If you set `ttl_seconds` on `run_call`, choose a retention window long enough
+for monitoring and recovery. Query availability is subject to that value and
+any configured retention policy; a `run_id` is not queryable indefinitely.
+
+Terminal statuses currently include `COMPLETED`, `FAILED`, `NO_ANSWER`,
+`DECLINED`, `CANCELED`, `CANCELLED`, `VOICEMAIL`, `BUSY`, and `EXPIRED`. Treat
+`NO ANSWER` as the same terminal outcome as `NO_ANSWER`. `COMPLETED` means the
+run completed; it does not by itself confirm that the requested task
+succeeded. Inspect the summary, details, and transcript, then apply your
+application's success criteria. Other terminal statuses stop polling but
+should not be treated as successful. For a status outside this documented
+set, follow `next_step` rather than inferring terminality from elapsed time.
+
+The suggested delay and polling cadence control query timing only. The MCP
+contract does not specify a maximum completion time. Reaching a client-side
+monitoring deadline or stopping the polling process does not fail or cancel
+the phone call.
+
+This workflow requires a `run_id`. If `run_call` has an uncertain outcome and
+returns no `run_id`, direct MCP has no documented general lookup or recovery
+operation. Do not create a new plan or retry automatically. Follow an explicit
+server `next_step` if one is available; otherwise, escalate for operator
+review. CALL-E CLI users should follow the returned `call recover` command in
+the [CLI reference](../../packages/cli/docs/cli-reference.md#commands).
+
+MCP `run_call` has no webhook or callback input. The `/calle/webhook` receiver
+and `webhook_url` in the [Developer API flow](../../README.md#api) apply to
+calls created through that API, not to MCP-started runs. Poll `get_call_run`
+for MCP completion.
 
 ## Safety Contract
 

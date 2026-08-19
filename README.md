@@ -169,7 +169,14 @@ sequenceDiagram
 | `run_call` | Starts the planned call. Requires the exact `plan_id` and `confirm_token` from the preceding `plan_call`. **Can place a real phone call.** |
 | `get_call_run` | Reads run status, activity, summary, and transcript. Read-only. After a call starts, wait ~60 seconds before the first poll, then every 5–10 seconds until terminal. |
 
-For OAuth details, tool details, and MCP setup, see the [MCP guide](https://github.com/CALLE-AI/call-e-integrations/blob/main/docs/mcp/openagent-oauth.md).
+<!-- sync-with: docs/mcp/openagent-oauth.md#reliable-terminal-state-workflow -->
+The ~60-second delay is a polling recommendation, not a completion deadline.
+Persist the returned `run_id` and resume `get_call_run` after a local timeout
+or restart; do not call `run_call` again. MCP `run_call` does not accept a
+`webhook_url`, so MCP clients should poll `get_call_run` for completion.
+
+For OAuth details, tool contracts, setup, and the completion workflow, see
+the [MCP guide](https://github.com/CALLE-AI/call-e-integrations/blob/main/docs/mcp/openagent-oauth.md#reliable-terminal-state-workflow).
 
 ### SDK
 
