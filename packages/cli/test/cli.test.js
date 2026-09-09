@@ -126,6 +126,7 @@ test("prints command-specific help for every supported subcommand", async () => 
     ["call", "run"],
     ["call", "recover"],
     ["call", "status"],
+    ["regions", "list"],
   ];
 
   for (const command of commands) {
@@ -135,6 +136,24 @@ test("prints command-specific help for every supported subcommand", async () => 
     assert.match(result.stdout, new RegExp(`Usage: calle ${command.join(" ")}`));
     assert.equal(result.stderr, "");
   }
+});
+
+test("prints the CLI version with both version flags", async () => {
+  for (const flag of ["--version", "-V"]) {
+    const result = await run([flag]);
+
+    assert.deepEqual(result, { code: 0, stdout: `${CLI_VERSION}\n`, stderr: "" });
+  }
+});
+
+test("prints the supported regions and languages documentation URL", async () => {
+  const result = await run(["regions", "list"]);
+
+  assert.equal(result.code, 0);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    supported_regions_and_languages_url: "https://github.com/CALLE-AI/call-e-integrations#supported-regions-and-languages",
+  });
+  assert.equal(result.stderr, "");
 });
 
 test("call plan argument errors recommend its command-specific help", async () => {
@@ -682,6 +701,41 @@ test("auth login forwards upstream integration context from environment", async 
   assert.deepEqual(mcpMethods, ["initialize", "notifications/initialized", "tools/list"]);
 });
 
+test("attribution options override environment values without changing the environment", async (t) => {
+  const cacheRoot = makeTempRoot("calle-cli-attribution-options");
+  t.after(() => fs.rmSync(cacheRoot, { recursive: true, force: true }));
+  const env = { CALLE_SOURCE: "old", CALLE_INTEGRATION: "legacy", CALLE_INTEGRATION_VERSION: "0.1.0" };
+  const events = [];
+  const result = await run([
+    "auth", "status", "--cache-root", cacheRoot,
+    "--source", "codex", "--integration=codex_plugin", "--integration-version", "1.2.3-beta.1+test",
+  ], { env: { ...env, CALLE_TELEMETRY: "1" }, telemetryFetchImpl: captureTelemetry(events) });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(events[0].payload.context.integration_context, {
+    source: "codex", integration: "codex_plugin", version: "1.2.3-beta.1+test",
+  });
+  assert.equal(resolveRuntimeConfig({ source: "codex" }, env).integrationHeader, "codex/legacy/0.1.0");
+  assert.deepEqual(env, { CALLE_SOURCE: "old", CALLE_INTEGRATION: "legacy", CALLE_INTEGRATION_VERSION: "0.1.0" });
+  assert.equal(resolveRuntimeConfig({}, {}).integrationHeader, defaultIntegrationHeader);
+  assert.equal(resolveRuntimeConfig({ source: "codex" }, {}).integrationHeader, "codex/unknown/unknown");
+
+  for (const flag of ["--source", "--integration", "--integration-version"]) {
+    for (const value of ["", "bad/value", "bad value", "bad\r\nheader"]) {
+      const invalid = await run(["auth", "status", flag, value], {
+        fetchImpl: () => assert.fail("invalid attribution must not reach the server"),
+      });
+      assert.equal(invalid.code, 2);
+      const payload = JSON.parse(invalid.stdout);
+      assert.equal(payload.error.code, "invalid_arguments");
+      assert.ok(payload.error.message.includes(`${flag} expects`), payload.error.message);
+    }
+    const missing = await run(["auth", "status", flag]);
+    assert.equal(missing.code, 2);
+    assert.ok(JSON.parse(missing.stdout).error.message.includes(`Missing value for ${flag}`));
+  }
+});
+
 test("auth login resumes a pending login without creating a new session", async () => {
   const cacheRoot = makeTempRoot("calle-cli-pending");
   const serverUrl = "https://mcp.example/mcp/openagent_oauth";
@@ -960,7 +1014,9 @@ test("mcp call forwards plan_call arguments and request meta", async () => {
       return jsonRpcResponse({
         jsonrpc: "2.0",
         id: payload.id,
-        result: { structuredContent: { plan_id: "plan-1" } },
+        result: {
+          content: [{ type: "text", text: '{"plan_id":"plan-1"}' }],
+        },
       });
     }
     throw new Error(`unexpected method: ${payload.method}`);
@@ -1000,6 +1056,7 @@ test("mcp call forwards plan_call arguments and request meta", async () => {
   assert.equal(calls[0]._meta["openai/organization"], undefined);
   assert.equal(payload.ok, true);
   assert.equal(payload.tool_name, "plan_call");
+  assert.deepEqual(payload.result.structuredContent, { plan_id: "plan-1" });
 });
 
 test("mcp call gives plan_call an extended default timeout and honors an explicit override", async () => {
@@ -1328,21 +1385,32 @@ test("call start plans and runs without printing confirmation data", async () =>
         return jsonRpcResponse({
           jsonrpc: "2.0",
           id: payload.id,
-          result: { structuredContent: { plan_id: "plan-1", confirm_token: "confirm-1" } },
+          result: {
+            content: [
+              {
+                type: "text",
+                text: '{"plan_id":"plan-1","confirm_token":"confirm-1","ready_to_run":true}',
+              },
+            ],
+          },
         });
       }
       if (payload.params.name === "run_call") {
         return jsonRpcResponse({
           jsonrpc: "2.0",
           id: payload.id,
-          result: { structuredContent: { run_id: "run-1", status: "STARTED" } },
+          result: {
+            content: [{ type: "text", text: '{"run_id":"run-1","status":"STARTED"}' }],
+          },
         });
       }
       if (payload.params.name === "get_call_run") {
         return jsonRpcResponse({
           jsonrpc: "2.0",
           id: payload.id,
-          result: { structuredContent: { run_id: "run-1", status: "IN_PROGRESS" } },
+          result: {
+            content: [{ type: "text", text: '{"run_id":"run-1","status":"IN_PROGRESS"}' }],
+          },
         });
       }
     }

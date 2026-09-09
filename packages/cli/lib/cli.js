@@ -19,6 +19,7 @@ import {
   DEFAULT_CLIENT_NAME,
   DEFAULT_PLAN_CALL_TIMEOUT_SECONDS,
   DEFAULT_SCOPE,
+  CLI_VERSION,
   resolveRuntimeConfig,
 } from "./config.js";
 import { ensurePendingLogin, loginWithBroker } from "./broker-client.js";
@@ -90,6 +91,7 @@ I'll keep you updated on the phone status, call content, and summary.`;
 
 const POST_AUTH_HELP_HINT_TYPE = "post_auth_help";
 const PRE_AUTH_HELP_HINT_TYPE = "pre_auth_help";
+const SUPPORTED_REGIONS_AND_LANGUAGES_URL = "https://github.com/CALLE-AI/call-e-integrations#supported-regions-and-languages";
 
 const COMMAND_GROUPS = {
   auth: {
@@ -206,9 +208,22 @@ const COMMAND_GROUPS = {
       },
     },
   },
+  regions: {
+    summary: "Find supported CALL-E regions and languages",
+    commands: {
+      list: {
+        summary: "Print the supported regions and languages documentation URL",
+        usage: "calle regions list [options]",
+        examples: ["calle regions list"],
+      },
+    },
+  },
 };
 
 const COMMON_OPTION_NAMES = new Set([
+  "source",
+  "integration",
+  "integration-version",
   "base-url",
   "broker-base-url",
   "server-url",
@@ -240,6 +255,7 @@ const COMMAND_OPTION_NAMES = {
   "call run": new Set(["plan-id", "confirm-token", "timezone"]),
   "call recover": new Set(["recovery-id", "timezone"]),
   "call status": new Set(["run-id", "cursor", "limit", "timezone"]),
+  "regions list": new Set(),
 };
 
 const KNOWN_OPTION_NAMES = new Set([
@@ -249,6 +265,9 @@ const KNOWN_OPTION_NAMES = new Set([
 ]);
 
 const COMMON_HELP = `Global options (accepted by every command):
+  --source <name>              Override CALLE_SOURCE attribution
+  --integration <name>         Override CALLE_INTEGRATION attribution
+  --integration-version <ver>  Override CALLE_INTEGRATION_VERSION attribution
   --base-url <url>             Default: ${DEFAULT_BASE_URL}
   --broker-base-url <url>      Default: --base-url
   --server-url <url>           Default: <base-url>/mcp/<channel>
@@ -266,16 +285,17 @@ const COMMON_HELP = `Global options (accepted by every command):
   --telemetry[=true|false]
   --telemetry-url <url>
   --telemetry-timeout-seconds <seconds>
-  --help, -h                   Show help for the current command`;
+  --help, -h                   Show help for the current command
+  --version, -V                Show the CLI version`;
 
 function helpCommandFor(group, command) {
   if (COMMAND_GROUPS[group]?.commands?.[command]) {
-    return `calle ${group} ${command} --help`;
+    return [group, command, "--help"];
   }
   if (COMMAND_GROUPS[group]) {
-    return `calle ${group} --help`;
+    return [group, "--help"];
   }
-  return "calle --help";
+  return ["--help"];
 }
 
 function printRootHelp(stdout) {
@@ -295,6 +315,7 @@ ${commands}
 Run 'calle <command> --help' to list a group's subcommands.
 Run 'calle <command> <subcommand> --help' to view all supported parameters.
 Example: calle call plan --help
+Agent follow-ups: login_argv, help_argv, next_argv contain JSON argument arrays.
 
 ${COMMON_HELP}
 `);
@@ -721,9 +742,15 @@ function shellQuote(value) {
   return `'${text.replaceAll("'", "'\\''")}'`;
 }
 
+function commandFields(name, argv) {
+  return {
+    [`${name}_command`]: ["calle", ...argv].map(shellQuote).join(" "),
+    [`${name}_argv`]: argv,
+  };
+}
+
 function loginCommand(config) {
-  return [
-    "calle",
+  return commandFields("login", [
     "auth",
     "login",
     "--server-url",
@@ -736,14 +763,11 @@ function loginCommand(config) {
     config.channel,
     "--cache-root",
     config.cacheRoot,
-  ]
-    .map(shellQuote)
-    .join(" ");
+  ]);
 }
 
 function callStatusCommand(config, runId, timezone = null) {
-  return [
-    "calle",
+  return commandFields("next", [
     "call",
     "status",
     "--run-id",
@@ -753,14 +777,11 @@ function callStatusCommand(config, runId, timezone = null) {
     config.serverUrl,
     "--cache-root",
     config.cacheRoot,
-  ]
-    .map(shellQuote)
-    .join(" ");
+  ]);
 }
 
 function callRecoveryCommand(config, recoveryId, timezone = null) {
-  return [
-    "calle",
+  return commandFields("next", [
     "call",
     "recover",
     "--recovery-id",
@@ -770,9 +791,7 @@ function callRecoveryCommand(config, recoveryId, timezone = null) {
     config.serverUrl,
     "--cache-root",
     config.cacheRoot,
-  ]
-    .map(shellQuote)
-    .join(" ");
+  ]);
 }
 
 function isActivePendingLogin(pending) {
@@ -790,7 +809,7 @@ function authRequiredPayload(config, message = "A usable CALL-E auth token is re
       code: "auth_required",
       message,
     },
-    login_command: loginCommand(config),
+    ...loginCommand(config),
     ...(loginUrl ? { login_url: loginUrl } : {}),
     ...(assistantHint ? { assistant_hint: assistantHint } : {}),
   };
@@ -819,7 +838,7 @@ function errorPayload(error, config, helpCommand = null) {
           code: "invalid_arguments",
           message: error.message,
         },
-        ...(helpCommand ? { help_command: helpCommand } : {}),
+        ...(helpCommand ? commandFields("help", helpCommand) : {}),
       },
     };
   }
@@ -830,7 +849,7 @@ function errorPayload(error, config, helpCommand = null) {
       call_started: error.callStarted,
       retry_safe: error.retrySafe,
       ...(error.recoveryId ? { recovery_id: error.recoveryId } : {}),
-      ...(error.nextCommand ? { next_command: error.nextCommand } : {}),
+      ...(error.nextCommand ?? {}),
     } : {};
     return {
       exitCode: 1,
@@ -855,7 +874,7 @@ function errorPayload(error, config, helpCommand = null) {
           call_started: error.callStarted,
           retry_safe: error.retrySafe,
           ...(error.recoveryId ? { recovery_id: error.recoveryId } : {}),
-          ...(error.nextCommand ? { next_command: error.nextCommand } : {}),
+          ...(error.nextCommand ?? {}),
         } : {}),
         error: {
           code: error.code || "mcp_error",
@@ -1290,7 +1309,7 @@ async function writeRunCallSuccess({
     status_query_succeeded: statusError === null,
     status_result: statusResult,
     ...(statusError ? { status_error: statusError } : {}),
-    next_command: callStatusCommand(config, runId, statusTimezone),
+    ...callStatusCommand(config, runId, statusTimezone),
   });
 }
 
@@ -1553,6 +1572,10 @@ async function runCliCommand(argv, deps = {}) {
     printHelp(stdout, argv);
     return 0;
   }
+  if (argv.includes("--version") || argv.includes("-V")) {
+    stdout(`${CLI_VERSION}\n`);
+    return 0;
+  }
 
   const [group, command, ...rest] = argv;
   const { options, positional, optionNames } = parseOptions(rest);
@@ -1681,6 +1704,14 @@ async function runCliCommand(argv, deps = {}) {
 
   if (group === "call") {
     return handleCallCommand({ command, positional, options, config, deps, stdout, stderr, captureTelemetry });
+  }
+
+  if (group === "regions" && command === "list") {
+    assertNoUnexpectedPositional(positional);
+    writeJson(stdout, {
+      supported_regions_and_languages_url: SUPPORTED_REGIONS_AND_LANGUAGES_URL,
+    });
+    return 0;
   }
 
   throw new InvalidArgumentsError(`Unknown command: ${[group, command].filter(Boolean).join(" ")}`);

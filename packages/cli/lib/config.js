@@ -40,7 +40,7 @@ export const DEFAULT_POLL_TIMEOUT_SECONDS = 300;
 export const DEFAULT_PLAN_CALL_TIMEOUT_SECONDS = 150;
 export const DEFAULT_TELEMETRY_TIMEOUT_SECONDS = 1.5;
 export const DEFAULT_CACHE_ROOT = path.join(os.homedir(), ".calle-mcp", "cli");
-export const CLI_VERSION = "0.4.0";
+export const CLI_VERSION = "0.5.0";
 
 function firstOptionValue(value) {
   return Array.isArray(value) ? value[0] : value;
@@ -128,6 +128,18 @@ function normalizeIntegrationSegment(value) {
   return cleaned;
 }
 
+function integrationOption(value, fallback, flag) {
+  const provided = firstOptionValue(value);
+  if (provided === undefined) {
+    return fallback;
+  }
+  const normalized = normalizeIntegrationSegment(provided);
+  if (!normalized) {
+    throw new Error(`${flag} expects letters, numbers, dots, underscores, plus signs, or hyphens.`);
+  }
+  return normalized;
+}
+
 export function resolveIntegrationContext(env = {}, cliVersion = CLI_VERSION) {
   const source = normalizeIntegrationSegment(env.CALLE_SOURCE);
   const integration = normalizeIntegrationSegment(env.CALLE_INTEGRATION);
@@ -160,7 +172,11 @@ export function resolveRuntimeConfig(options = {}, env = process.env) {
   const baseUrl = normalizeBaseUrl(options.baseUrl || DEFAULT_BASE_URL);
   const channel = options.channel || DEFAULT_CHANNEL;
   const serverUrl = resolveServerUrl({ serverUrl: options.serverUrl, baseUrl, channel });
-  const integrationContext = resolveIntegrationContext(env, CLI_VERSION);
+  const integrationContext = resolveIntegrationContext({
+    CALLE_SOURCE: integrationOption(options.source, env.CALLE_SOURCE, "--source"),
+    CALLE_INTEGRATION: integrationOption(options.integration, env.CALLE_INTEGRATION, "--integration"),
+    CALLE_INTEGRATION_VERSION: integrationOption(options.integrationVersion, env.CALLE_INTEGRATION_VERSION, "--integration-version"),
+  }, CLI_VERSION);
   return {
     cliVersion: CLI_VERSION,
     integrationContext,

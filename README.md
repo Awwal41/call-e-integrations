@@ -98,6 +98,7 @@ flowchart LR
 | **Scheduled and Batch Calling** | Schedule individual calls or send a batch task to multiple recipients |
 | **In-Task Optimization** | Adapts call strategy based on prior attempts within the same task |
 | **Real-World Voice Handling** | Manages live pickup, voicemail, call screening, hold, transfers, silence, and interruptions |
+| **IVR Navigation** | Detects and navigates IVR menus during outbound calls, using DTMF keypad input when needed to reach the requested department, queue, automated service, or person |
 | **Multiple Integration Paths** | Agent plugins, MCP, SDKs, APIs, and enterprise systems |
 | **Safety and Governance** | Number governance, rate limits, concurrency controls, blocklists, kill switches, redacted logs, and audit trails |
 
@@ -195,7 +196,7 @@ pip install calle-ai
 **Set your API key:**
 
 ```bash
-export CALLE_API_KEY="calle_live_key"
+export CALLE_API_KEY="iams_live_example"
 ```
 
 Get your API key from the [CALL-E dashboard](https://dashboard.heycall-e.com/account/api-keys).
@@ -257,7 +258,7 @@ The CALL-E Developer API provides direct HTTP access for any trusted backend, wo
 **Set credentials:**
 
 ```bash
-export CALLE_API_KEY="calle_live_key"
+export CALLE_API_KEY="iams_live_example"
 export CALLE_BASE_URL="https://api.heycall-e.com"
 ```
 
@@ -361,8 +362,8 @@ Use these country codes with the SDK and API recipient settings.
 | --- | --- | --- | --- | --- |
 | United States of America | `US` | +1 | English | Local |
 | Singapore | `SG` | +65 | English | Local |
-| Malaysia | `MY` | +60 | English, Chinese | Local |
-| India | `IN` | +91 | English, Hindi | Local |
+| Malaysia | `MY` | +60 | English, Chinese, Malay | Local |
+| India | `IN` | +91 | English, Hindi, Tamil | International |
 | United Arab Emirates | `AE` | +971 | English, Arabic | Local |
 | Australia | `AU` | +61 | English | Local |
 | Canada | `CA` | +1 | English | International |
@@ -386,13 +387,21 @@ Use these country codes with the SDK and API recipient settings.
 | Cameroon | `CM` | +237 | English, French | International |
 | Mozambique | `MZ` | +258 | English, Portuguese | International |
 | Saudi Arabia | `SA` | +966 | English, Arabic | International |
-| Finland | `FI` | +358 | English | International |
+| Finland | `FI` | +358 | English, Finnish | International |
 | Ukraine | `UA` | +380 | English, Ukrainian | International |
-| Sri Lanka | `LK` | +94 | English, Tamil | International |
+| Sri Lanka | `LK` | +94 | English, Tamil, Sinhala | International |
 | Botswana | `BW` | +267 | English | International |
 | Pakistan | `PK` | +92 | English, Urdu | International |
 | Turkey | `TR` | +90 | Turkish | International |
 | Honduras | `HN` | +504 | English, Spanish | International |
+| Spain | `ES` | +34 | English, Spanish | International |
+| Taiwan | `TW` | +886 | English | International |
+| South Africa | `ZA` | +27 | English | International |
+| Egypt | `EG` | +20 | English, Arabic | International |
+| Ghana | `GH` | +233 | English | International |
+| Israel | `IL` | +972 | English, Hebrew | International |
+| Ireland | `IE` | +353 | English | International |
+| Tunisia | `TN` | +216 | English | International |
 
 **Notes**
 
@@ -454,12 +463,12 @@ The `calle` CLI sends best-effort usage telemetry to help diagnose installation,
 
 **What is never collected:** phone numbers, call goals, OAuth tokens, broker login URLs, transcripts, or contact data.
 
-**Opt out** with any of:
+**Opt out** with `--no-telemetry`. First follow
+[CLI entry point selection](packages/cli/docs/cli-reference.md#selecting-the-cli-entry-point)
+to prepare the launcher and a JSON request. Add `--no-telemetry` to its `argv`:
 
-```bash
-DO_NOT_TRACK=1 calle auth status
-CALLE_TELEMETRY=0 calle auth status
-calle auth status --no-telemetry
+```json
+["auth", "status", "--no-telemetry"]
 ```
 
 Broker and MCP requests still create service-side security, audit, and operational logs required to run calls.
